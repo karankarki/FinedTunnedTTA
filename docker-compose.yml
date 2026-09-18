@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  tts-api:
+    build: .
+    container_name: neural-tts-service
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - PYTORCH_ENABLE_MPS_FALLBACK=1
+    volumes:
+      - ./outputs:/app/outputs
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
