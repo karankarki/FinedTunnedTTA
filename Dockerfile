@@ -28,15 +28,15 @@ EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:8000/api/status || exit 1
+  CMD curl -f http://localhost:${PORT:-8000}/api/status || exit 1
 
 # Production Gunicorn with Uvicorn workers
-# Scales workers based on available CPU cores
-CMD ["gunicorn", "app.main:app", \
-     "--workers", "4", \
-     "--worker-class", "uvicorn.workers.UvicornWorker", \
-     "--bind", "0.0.0.0:8000", \
-     "--timeout", "120", \
-     "--keep-alive", "65", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+# Dynamically binds to $PORT (Render/Koyeb/Hugging Face) or 8000
+CMD exec gunicorn app.main:app \
+     --workers 2 \
+     --worker-class uvicorn.workers.UvicornWorker \
+     --bind "0.0.0.0:${PORT:-8000}" \
+     --timeout 120 \
+     --keep-alive 65 \
+     --access-logfile - \
+     --error-logfile -
