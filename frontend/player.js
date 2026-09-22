@@ -182,13 +182,15 @@
       this.seen = new WeakSet();
     }
 
+    // A negative `at` means the animation already happened, e.g. in a scene that continues the
+    // previous one: it is finished from the scene's first frame.
     to(node, keyframes, at, duration = 0.6, easing = EASE) {
       if (!node || !Number.isFinite(at)) return;
       const fill = this.seen.has(node) ? 'forwards' : 'both';
       this.seen.add(node);
       const anim = node.animate(keyframes, {
         duration: Math.max(1, duration * 1000),
-        delay: Math.max(0, at) * 1000,
+        delay: at * 1000,
         fill,
         easing,
       });
@@ -612,8 +614,9 @@
       return chipEl;
     });
     box.append(chips);
-    tl.to(mark, POP, 0.05, 0.6);
-    animateHead(tl, head, 0.15);
+    const introAt = beatAt(scene, 'intro', 0);
+    tl.to(mark, POP, introAt + 0.05, 0.6);
+    animateHead(tl, head, introAt + 0.15);
     itemTimes(scene, 'chip', chipEls.length, 1).forEach((at, i) => tl.to(chipEls[i], POP, at, 0.5));
   }
 
@@ -818,6 +821,7 @@
       id: raw.id || '',
       chapter: raw.chapter || '',
       theme: raw.theme || null,
+      continues: Boolean(raw.continues),   // second part of the previous segment's chapter
       ready,
       duration: ready ? Number(raw.duration) || 0 : null,
       estimate: Math.max(0, Number(raw.estimate) || 0),
@@ -1239,8 +1243,10 @@
     setTimeout(() => { prev.tl.destroy(); prev.root.remove(); }, 400);
   }
 
+  // A scene marked `continues` picks up exactly where the previous one left off (the same
+  // screen, recorded as a separate segment), so it replaces it without a transition.
   function mountScene(scene) {
-    unmountActive(true);
+    unmountActive(!(scene && scene.continues));
     if (!scene) return;
     const root = el('section', 'scene');
     root.dataset.type = scene.type;
@@ -1302,17 +1308,24 @@
     const label = $('chapterLabel');
     if (label.textContent !== title) label.textContent = title;
     if (!scene && seg && seg.theme) phone.dataset.theme = seg.theme;
-    const key = scene ? scene.key : `seg:${k}`;
-    if (key !== state.chapterKey && !state.scrubbing) {   // previews while dragging aren't reported
-      state.chapterKey = key;
+    // Reported when the chapter changes; the second part of a chapter is the same chapter.
+    if (title !== state.chapterKey && !state.scrubbing) {   // previews while dragging aren't reported
+      state.chapterKey = title;
       const multi = state.segs.length > 1;
+      const index = multi
+        ? state.segs.slice(0, k + 1).filter((s) => !s.continues).length - 1
+        : state.scenes.filter((s) => !s.continues && s.start <= t).length - 1;
       emit('chapter', {
-        index: multi ? k : Math.max(0, state.scenes.indexOf(scene)),
-        count: multi ? state.segs.length : state.scenes.length,
+        index: Math.max(0, index),
+        count: chapterCount(),
         id: multi ? seg.id : (scene && scene.id) || '',
         title,
       });
     }
+  }
+
+  function chapterCount() {
+    return (state.segs.length > 1 ? state.segs : state.scenes).filter((s) => !s.continues).length;
   }
 
   function updateProgress(t) {
@@ -1450,7 +1463,7 @@
     title.replaceChildren(...rich('span', '', intro.title || story.title || '').childNodes);
     $('startSub').textContent = intro.subtitle || '';
     const lang = (story.languages || []).find((l) => l.code === story.language);
-    const chapters = state.segs.length > 1 ? state.segs.length : state.scenes.length;
+    const chapters = chapterCount();
     const meta = $('startMeta');
     meta.replaceChildren();
     [`${state.estimated ? '~' : ''}${clock(state.duration)}`, lang ? lang.label : story.language, `${chapters} chapters`]

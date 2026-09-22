@@ -476,8 +476,8 @@
     };
     const name = $('c_name').value.trim();
     if (name) body.customer_name = name;
-    await runGeneration('/api/story/crif', body, 'Writing the walkthrough and recording chapter 1…',
-      'Recording the first chapter, usually 3–8 seconds. The rest records while it plays.');
+    await runGeneration('/api/story/crif', body, 'Writing the walkthrough and recording the greeting…',
+      'Recording the opening line, usually 1–3 seconds. The rest records while it plays.');
   }
 
   // ---------------------------------------------------------------- generate
@@ -521,8 +521,8 @@
       return;
     }
     showError('');
-    await runGeneration('/api/story', payload, 'Generating narration and animation…',
-      'Synthesizing the voice, usually 5–15 seconds.');
+    await runGeneration('/api/story', payload, 'Recording your score…',
+      'Recording the first stage, usually 1–3 seconds. The rest records while it plays.');
   }
 
   // Posts to a story endpoint, then plays the story it returns.

@@ -35,7 +35,7 @@ The backend serves the page, the API and the generated stories:
 # open http://localhost:8000/player/
 ```
 
-On the **CRIF report** tab, drop the CRIF response file (or paste its JSON). A summary card confirms it's the right report. Pick the languages and speed, then press **Generate video**. The video starts playing as soon as its first chapter is recorded, usually after 3–8 seconds, and the other chapters record while it plays (the status line under the button counts them). The same report again within 24 hours comes back instantly. The address bar gets `?story=…`, so the link reopens that exact video until it expires.
+On the **CRIF report** tab, drop the CRIF response file (or paste its JSON). A summary card confirms it's the right report. Pick the languages and speed, then press **Generate video**. The video starts playing as soon as its opening line is recorded, usually after 1–2 seconds, and the other chapters record while it plays (the status line under the button counts them). The same report again within 24 hours comes back instantly. The address bar gets `?story=…`, so the link reopens that exact video until it expires.
 
 The seek bar under the video is one continuous line: tap or drag anywhere on it to move forward or back, and a bubble shows the time and chapter while you drag. While a new video is still recording, the lighter part of the bar shows how much is ready and the total time has a `~` because later chapters are estimated. If playback reaches a chapter that isn't recorded yet, it shows "Recording this chapter…" and carries on by itself when it's ready.
 
@@ -50,24 +50,27 @@ curl -X POST "http://localhost:8000/api/story/crif?languages=hi,en" \
 
 Options go in the query string (`languages=hi,en`, `customer_name=Waseem`, `voice_speed=1.05`), or you can wrap the report: `{"report": {…}, "languages": ["en"], "customer_name": "Waseem", "voice_speed": 1.0}`. A body that isn't a CRIF report returns HTTP 422.
 
-**Fast first response.** Each chapter is recorded as its own small audio file. The API answers as soon as chapter 1 of the first language is recorded, usually after 3–8 seconds, and a background job records the rest in playing order (first language first, 8 chapters at a time). The whole two-language video is usually done within a minute, well before a viewer gets to the later chapters. Chapters that were already recorded are reused if the same report is sent again after a failure or a server restart.
+**Fast first response (stage 1).** Each chapter is recorded as its own small audio file, and the opening line ("Hello Waseem! Welcome to your complete credit report.") is recorded as a separate first segment, called stage 1, which takes about a second. The API answers as soon as stage 1 of the first language exists, **usually in 1–2 seconds**, and returns its audio in `stage1`. A background job records the rest in playing order (first language first, 8 chapters at a time). The rest of the welcome is ready a couple of seconds later, before the opening line has finished playing, and continues on the same screen. The whole two-language video is usually done within a minute. Chapters that were already recorded are reused if the same report is sent again after a failure or a server restart.
+
+The API waits at most **2.5 seconds** for stage 1. If the voice service is slow, it answers anyway with `"stage1": null`, and `story_url` still starts playing once stage 1 is there. Add `wait=<seconds>` to the query string to change that limit: `wait=0` answers immediately, and `wait=30` always waits for the audio.
 
 ```json
 {
-  "story_id": "4bc15b8da6eca2a7",
+  "story_id": "d3694cbedd587a5c",
   "cached": false,
   "status": "generating",
-  "chapters_ready": 5,
-  "story_url": "/stories/4bc15b8da6eca2a7/story.hi.json",
-  "player_url": "/player/?embed=1&story=/stories/4bc15b8da6eca2a7/story.hi.json",
+  "story_url": "/stories/d3694cbedd587a5c/story.hi.json",
+  "player_url": "/player/?embed=1&story=/stories/d3694cbedd587a5c/story.hi.json",
+  "stage1": { "language": "hi", "audio_url": "/stories/d3694cbedd587a5c/hi/00.mp3", "duration": 6.818 },
   "expires_at": "2026-09-23T06:22:26+00:00",
   "languages": [{ "code": "hi", "label": "हिंदी", "story_url": "…/story.hi.json" }, { "code": "en", "label": "English", "story_url": "…/story.en.json" }],
-  "summary": { "source": "crif", "name": "Athi", "score": 722, "…": "…" },
+  "chapters_ready": 1,
+  "summary": { "source": "crif", "name": "Waseem", "score": 821, "…": "…" },
   "chapters": ["Welcome", "Your score", "…"]
 }
 ```
 
-`status` is `generating` while chapters are still recording, and `ready` when the whole video exists (`cached: true` means it was already complete). `story_url` is playable either way, because the player loads new chapters as they appear. `player_url` is the same story in the full-screen embed player (see [Embed it in an app](#embed-it-in-an-app)). If the first chapter can't be recorded, you get HTTP 502, or 504 if the voice service takes more than 90 seconds.
+`status` is `generating` while chapters are still recording, and `ready` when the whole video exists (`cached: true` means it was already complete). `story_url` is playable either way, because the player loads new chapters as they appear. `stage1.audio_url` is the opening line's MP3 on its own, if you want to play it before opening the player. `player_url` is the same story in the full-screen embed player (see [Embed it in an app](#embed-it-in-an-app)). If stage 1 can't be recorded at all, you get HTTP 502.
 
 **What the video covers.** Chapters that don't apply are left out; for example, "Overdue now" only appears if something is overdue.
 
@@ -146,9 +149,11 @@ curl -X POST http://localhost:8000/api/story -H "Content-Type: application/json"
 {
   "story_id": "50beaf4fbce6d554",
   "cached": false,
-  "status": "ready",
+  "status": "generating",
   "story_url": "/stories/50beaf4fbce6d554/story.en.json",
   "player_url": "/player/?embed=1&story=/stories/50beaf4fbce6d554/story.en.json",
+  "stage1": { "language": "en", "audio_url": "/stories/50beaf4fbce6d554/en/00.mp3", "duration": 14.07 },
+  "stages_ready": 1,
   "languages": [
     { "code": "en", "label": "English", "story_url": "/stories/50beaf4fbce6d554/story.en.json" },
     { "code": "hi", "label": "हिंदी", "story_url": "/stories/50beaf4fbce6d554/story.hi.json" }
@@ -157,7 +162,7 @@ curl -X POST http://localhost:8000/api/story -H "Content-Type: application/json"
 }
 ```
 
-Open `http://localhost:8000/player/?story=/stories/50beaf4fbce6d554/story.en.json` to play it. Invalid input returns HTTP 422 with one entry per bad field. If the voice service can't be reached, you get HTTP 502. Generated files live in `outputs/stories/<story_id>/`. The quick summary is short enough (about 5 seconds) that it is still recorded in one go, so it always comes back `ready`.
+Open `http://localhost:8000/player/?story=/stories/50beaf4fbce6d554/story.en.json` to play it. Invalid input returns HTTP 422 with one entry per bad field. If the voice service can't be reached, you get HTTP 502. Generated files live in `outputs/stories/<story_id>/`. Like the CRIF walkthrough, the quick summary is recorded one stage at a time. The API answers once stage 1, the score, is recorded, usually in 1–2 seconds, with its audio in `stage1`; the other five stages record in the background. The same `wait` query parameter applies.
 
 ## Embed it in an app
 
@@ -280,7 +285,9 @@ This is what `POST /api/story` produces and the player reads. You normally don't
 
 ### Segmented stories (the CRIF walkthrough)
 
-`POST /api/story/crif` writes schema `4.0`. Instead of one `audio` file with `scenes` and `captions`, the story is a manifest of **segments**, one per chapter, each with its own MP3 and a small data file. The manifest is rewritten each time a chapter finishes recording. While `status` is `generating`, the player re-reads it every 1.5 seconds.
+`POST /api/story/crif` and `POST /api/story` write schema `4.0`. Instead of one `audio` file with `scenes` and `captions`, the story is a manifest of **segments**, one per chapter or stage, each with its own MP3 and a small data file. The manifest is rewritten each time a segment finishes recording. While `status` is `generating`, the player re-reads it every 1.5 seconds. (`frontend/tools/generate_story.py` still writes the single-file format above.)
+
+A chapter can be recorded in two parts: the second segment has `"continues": true`, and so does its scene. A continuing scene picks up exactly where the previous one ended. Its already-finished animations have beats at negative times, and the player swaps it in without a transition, so on screen it looks like one scene. The CRIF welcome is split like this so that stage 1 is only the opening line, and the quick summary's score dial stays up into stage 2.
 
 ```jsonc
 {
