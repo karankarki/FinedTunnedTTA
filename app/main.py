@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 from pathlib import Path
 from typing import Optional, List
@@ -6,14 +7,12 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-import torch
 
 from app.config import (
     BASE_DIR,
     OUTPUTS_DIR,
     LANGUAGES,
     VOICES,
-    DEVICE,
     SAMPLE_RATE
 )
 from app.kokoro_engine import engine
@@ -42,10 +41,18 @@ register_story_routes(app)
 # In-memory generation history cache (persisted to outputs folder)
 GENERATION_HISTORY = []
 
+# Pre-recording the common /api/credit-report stages at startup makes those responses instant, but
+# it sends ~100 voice requests every time the server boots, which slows a small cloud instance
+# while it is serving its first requests. On by default locally, off on Render (which sets
+# RENDER=true); WARM_CACHE_ON_STARTUP=1 or 0 overrides either way.
+WARM_CACHE_ON_STARTUP = os.environ.get("WARM_CACHE_ON_STARTUP", "0" if os.environ.get("RENDER") else "1") == "1"
+
+
 @app.on_event("startup")
 async def startup_event():
     """Background startup task to pre-warm static advice cache for 1ms responses."""
-    asyncio.create_task(credit_engine.warm_advice_cache())
+    if WARM_CACHE_ON_STARTUP:
+        asyncio.create_task(credit_engine.warm_advice_cache())
 
 # Pydantic Schemas
 class TTSRequest(BaseModel):
@@ -67,15 +74,20 @@ class PhonemizeRequest(BaseModel):
 # Endpoints
 @app.get("/api/status")
 def get_system_status():
-    """Retrieve system, hardware acceleration, and model readiness status."""
-    mps_active = torch.backends.mps.is_available()
+    """Retrieve system, hardware acceleration, and model readiness status.
+
+    Reports torch details only once Kokoro has loaded it: this endpoint is the health check, and
+    must not pull ~400 MB of torch into memory on a server that only uses the edge-tts voices.
+    """
+    torch = sys.modules.get("torch")
     return {
         "status": "ready",
         "default_engine": "edge-neural",
         "human_voices_available": True,
-        "device": engine.device,
-        "mps_available": mps_active,
-        "torch_version": torch.__version__,
+        "device": engine.device if engine.loaded else "not loaded (Kokoro loads on first use)",
+        "kokoro_loaded": engine.loaded,
+        "mps_available": torch.backends.mps.is_available() if torch else None,
+        "torch_version": torch.__version__ if torch else None,
         "sample_rate": SAMPLE_RATE,
         "languages": LANGUAGES,
         "models": ["Azure Neural Voices (Swara, Madhur, Neerja, Prabhat, Jenny)", "Kokoro-82M"]
@@ -576,7 +588,7 @@ def health_check():
     """Liveness check for container orchestration and load balancers."""
     return {
         "status": "healthy",
-        "device": engine.device,
+        "device": engine.device if engine.loaded else "not loaded (Kokoro loads on first use)",
         "sample_rate": SAMPLE_RATE,
         "model": "Kokoro-82M"
     }

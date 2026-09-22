@@ -1,7 +1,6 @@
 import os
 import sys
 from pathlib import Path
-import torch
 
 # Base directories
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -15,13 +14,15 @@ if sys.platform == "darwin":
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 def get_device():
+    # torch is only needed by the local Kokoro engine, so it is imported on first use rather than
+    # at startup: the edge-tts voices (and the whole story API) run without loading it.
+    import torch
     if torch.cuda.is_available():
         return "cuda"
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
 
-DEVICE = get_device()
 SAMPLE_RATE = 24000
 DEFAULT_TTS_ENGINE = "edge"
 

@@ -12,9 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python dependencies
+# Install Python dependencies. PyTorch comes from its CPU-only index first: the default PyPI
+# build bundles ~3 GB of CUDA libraries this server never uses. requirements.txt then finds
+# torch already installed and keeps it.
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchaudio && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application source (frontend/ is the player page served at /player/, which apps embed)

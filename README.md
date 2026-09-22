@@ -69,6 +69,11 @@ Start the server with Apple Silicon GPU acceleration enabled:
 
 Open your browser and navigate to **[http://localhost:8000](http://localhost:8000)**.
 
+### 3. Memory and startup
+- **Kokoro loads on first use.** torch and the Kokoro model (about 400 MB of memory together) are only loaded the first time a Kokoro voice is requested. A server that only uses the Azure Neural (edge-tts) voices, including the whole story video API, starts in under a second and runs in about 100 MB. `/api/status` reports `kokoro_loaded` and shows the torch details once it is loaded.
+- **`WARM_CACHE_ON_STARTUP`**: at startup the server pre-records the common `/api/credit-report` stages (about 100 voice requests) so those responses are instant. This is on by default locally and off on Render, which sets `RENDER=true`, because it slows a small instance while it serves its first requests. Set `WARM_CACHE_ON_STARTUP=1` or `0` to choose either way.
+- **Docker** installs the CPU-only PyTorch build. The default PyPI build bundles about 3 GB of CUDA libraries this server doesn't use.
+
 ---
 
 ## 💻 Command-Line Interface (CLI)

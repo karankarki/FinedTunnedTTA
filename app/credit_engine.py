@@ -9,13 +9,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import numpy as np
 import soundfile as sf
-import torch
 
 from app.config import (
-    DEVICE,
     OUTPUTS_DIR,
     SAMPLE_RATE,
-    get_device
 )
 from app.kokoro_engine import engine
 from app.edge_engine import edge_engine

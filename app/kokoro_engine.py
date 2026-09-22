@@ -1,16 +1,16 @@
+from __future__ import annotations
+
 import os
 import sys
 import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Union
 import numpy as np
 import soundfile as sf
-import torch
 
 from app.config import (
-    DEVICE,
     OUTPUTS_DIR,
     SAMPLE_RATE,
     LANGUAGES,
@@ -22,18 +22,34 @@ from app.config import (
 if sys.platform == "darwin":
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
-from kokoro import KPipeline
+if TYPE_CHECKING:
+    import torch
+    from kokoro import KPipeline
 
 class KokoroEngine:
     """Core synthesis engine wrapping Kokoro-82M with multi-language pipelines,
 
     voice blending, audio stitching, and phonetic analysis.
+
+    torch and kokoro (together ~400 MB of memory) are imported the first time a Kokoro voice
+    is used, not at startup, so a server that only uses the edge-tts voices never loads them.
     """
 
     def __init__(self):
-        self.device = get_device()
+        self._device: Optional[str] = None
         self.pipelines: Dict[str, KPipeline] = {}
-        print(f"[*] KokoroEngine initialized with default device: {self.device}")
+
+    @property
+    def loaded(self) -> bool:
+        """True once torch and a Kokoro pipeline have been loaded."""
+        return bool(self.pipelines)
+
+    @property
+    def device(self) -> str:
+        """Device Kokoro runs on; working it out imports torch, so it happens on first use."""
+        if self._device is None:
+            self._device = get_device()
+        return self._device
 
     def get_pipeline(self, lang_code: str = "a") -> KPipeline:
         """Get or lazily instantiate KPipeline for a specific language code."""
@@ -41,12 +57,13 @@ class KokoroEngine:
         if lang_code in self.pipelines:
             return self.pipelines[lang_code]
 
+        from kokoro import KPipeline
         print(f"[*] Loading Kokoro pipeline for language '{lang_code}' on device '{self.device}'...")
         try:
             pipeline = KPipeline(lang_code=lang_code, device=self.device)
         except Exception as e:
             print(f"[!] Warning: Failed to load on {self.device} ({e}). Falling back to CPU...")
-            self.device = "cpu"
+            self._device = "cpu"
             pipeline = KPipeline(lang_code=lang_code, device="cpu")
 
         self.pipelines[lang_code] = pipeline
