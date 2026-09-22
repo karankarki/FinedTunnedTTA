@@ -17,8 +17,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application source
+# Copy application source (frontend/ is the player page served at /player/, which apps embed)
 COPY app/ ./app/
+COPY frontend/ ./frontend/
 COPY cli.py .
 
 # Create persistent outputs directory

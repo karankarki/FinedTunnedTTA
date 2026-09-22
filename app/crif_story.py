@@ -9,16 +9,18 @@ are left out, so the video only talks about what is really in the report.
 import asyncio
 import hashlib
 import json
+import os
 import re
+import shutil
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.crif_report import parse_report
-from app.story_engine import (BRAND, LANGUAGE_LABELS, SCORE_BANDS, VOICES, assemble_scenes, captions_from,
-                              narrate_chapters)
+from app.story_engine import (BRAND, CHAPTER_LEAD, CHAPTER_TAIL, LANGUAGE_LABELS, LEAD_IN, SCORE_BANDS, TAIL, VOICES,
+                              captions_from, chapter_scene, narrate_chapter)
 
-SCHEMA_VERSION = "3.0"
+SCHEMA_VERSION = "4.0"
 
 TYPE_NAMES = {  # en singular, en plural, hindi, screen label, icon
     "Credit Card": ("credit card", "credit cards", "क्रेडिट कार्ड", "Credit card", "card"),
@@ -971,31 +973,105 @@ def prepare(report_json: Any, customer_name: Optional[str], languages: List[str]
     return p, name, chapters, langs, story_id(chapters, langs, speed)
 
 
-async def generate_crif_stories(p, name, chapters, langs, speed, sid, json_path: Callable[[str], Path],
-                                audio_path: Callable[[str], Path]) -> Dict[str, dict]:
-    slots = asyncio.Semaphore(8)
-    t = p["totals"]
+# ------------------------------------------------------------------------------------ generation
+# The story is written as segments: one MP3 plus one small JSON (scene + captions) per chapter,
+# listed by a manifest, story.<lang>.json. The manifest is rewritten each time a chapter
+# finishes, so a player can start on chapter 1 and pick up later chapters as they appear.
 
-    async def one(lang):
-        duration, timings = await narrate_chapters(chapters, lang, VOICES[lang], speed, audio_path(lang), slots)
-        minutes = max(1, round(duration / 60))
-        story = {
+CHARS_PER_SECOND = {"en": 12.7, "hi": 10.4}  # measured narration pace at 1.0x, pauses included
+CONCURRENT_CHAPTERS = 8
+
+
+def write_json(path: Path, data: dict):
+    """Write JSON atomically, so a file being served is never half-written."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def segment_files(lang: str, index: int):
+    """Audio and data file of one chapter, relative to the story folder (and to its manifest)."""
+    return f"{lang}/{index:02d}.mp3", f"{lang}/{index:02d}.json"
+
+
+def estimate_seconds(chapter: dict, lang: str, speed: float) -> float:
+    """Rough length of a chapter that hasn't been recorded yet, so the seek bar can show a total."""
+    chars = sum(len(s[lang]) for s in chapter["sentences"])
+    return round(chars / (CHARS_PER_SECOND[lang] * speed), 1)
+
+
+class CrifStoryJob:
+    """Records a CRIF story chapter by chapter and keeps each language's manifest current.
+
+    Chapters are recorded in playing order, first language first, up to CONCURRENT_CHAPTERS
+    at a time. `first_ready` is set as soon as the first language's opening chapter is on disk
+    (or the job has failed), which is when the API can hand out a playable story. Chapters left
+    on disk by an interrupted run are reused rather than recorded again.
+    """
+
+    def __init__(self, p, name, chapters, langs, speed, sid, folder: Path):
+        self.p, self.name, self.chapters, self.langs, self.speed, self.sid, self.folder = \
+            p, name, chapters, langs, speed, sid, folder
+        self.durations = {lang: [self._on_disk(lang, i) for i in range(len(chapters))] for lang in langs}
+        self.first_ready = asyncio.Event()
+        self.error: Optional[str] = None     # first chapter failure, if any
+        self.start_failed = False            # the opening chapter failed, so nothing is playable
+        self.finished = False
+        self.generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self.task: Optional[asyncio.Task] = None
+
+    def _on_disk(self, lang, index) -> Optional[float]:
+        audio, data = (self.folder / f for f in segment_files(lang, index))
+        if not (audio.is_file() and data.is_file()):
+            return None
+        try:
+            return float(json.loads(data.read_text(encoding="utf-8"))["duration"])
+        except (ValueError, KeyError, TypeError):
+            return None
+
+    def ready_count(self, lang) -> int:
+        return sum(d is not None for d in self.durations[lang])
+
+    def status(self, lang) -> str:
+        if self.ready_count(lang) == len(self.chapters):
+            return "ready"
+        return "failed" if self.error and self.finished else "generating"
+
+    def manifest(self, lang) -> dict:
+        p, t = self.p, self.p["totals"]
+        segments, total = [], 0.0
+        for i, (ch, duration) in enumerate(zip(self.chapters, self.durations[lang])):
+            seg = {"id": ch["id"], "chapter": ch["chapter"], "theme": ch.get("theme", "blue")}
+            if duration is None:
+                seg.update(ready=False, estimate=estimate_seconds(ch, lang, self.speed))
+                total += seg["estimate"]
+            else:
+                audio, data = segment_files(lang, i)
+                seg.update(ready=True, duration=duration, audio=audio, data=data)
+                total += duration
+            segments.append(seg)
+        name = self.name
+        return {
             "schema_version": SCHEMA_VERSION,
-            "story_id": sid,
+            "format": "segmented",
+            "story_id": self.sid,
+            "status": self.status(lang),
+            **({"error": self.error} if self.error else {}),
             "title": f"Detailed credit report · {name or 'Customer'} · {date_screen(p['as_of'])}",
             "language": lang,
-            "languages": [{"code": c, "label": LANGUAGE_LABELS[c], "src": json_path(c).name} for c in langs],
-            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "languages": [{"code": c, "label": LANGUAGE_LABELS[c], "src": f"story.{c}.json"} for c in self.langs],
+            "generated_at": self.generated_at,
             "brand": BRAND,
-            "audio": {"src": audio_path(lang).name, "duration": duration, "voice": VOICES[lang], "speed": speed, "engine": "edge-neural"},
+            "audio": {"voice": VOICES[lang], "speed": self.speed, "engine": "edge-neural"},
+            "duration": round(total, 2),
             "player": {"captions": True},
             "report_summary": report_summary(p),
             "intro": {
                 "title": f"Hi {name}, your *detailed credit report* is ready" if name else "Your *detailed credit report* is ready",
-                "subtitle": f"A {minutes}-minute guided walkthrough of your CRIF High Mark report: your score, all {t['accounts']} accounts, your payment record and a plan to improve.",
+                "subtitle": f"A {max(1, round(total / 60))}-minute guided walkthrough of your CRIF High Mark report: your score, all {t['accounts']} accounts, your payment record and a plan to improve.",
                 "badges": [{"icon": "shield", "text": "100% Secure & Private"}, {"icon": "check", "text": "No impact on your score"}],
             },
-            "scenes": assemble_scenes(chapters, timings, duration),
             "end_card": {
                 "title": "That's your *complete report*",
                 "text": f"Data from CRIF High Mark, as of {date_screen(p['as_of'])}.",
@@ -1003,11 +1079,67 @@ async def generate_crif_stories(p, name, chapters, langs, speed, sid, json_path:
                 "primary_label": "Replay story", "secondary_label": "Close",
                 "disclaimer": "This video is for educational purposes only and should not be construed as financial advice.",
             },
-            "captions": captions_from(timings),
+            "segments": segments,
         }
-        out = json_path(lang)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(story, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        return lang, story
 
-    return dict(await asyncio.gather(*(one(lang) for lang in langs)))
+    def write_manifest(self, lang):
+        write_json(self.folder / f"story.{lang}.json", self.manifest(lang))
+
+    async def _record(self, lang, index, slots):
+        async with slots:
+            if self.start_failed or self.durations[lang][index] is not None:
+                return
+            last = index == len(self.chapters) - 1
+            chapter = self.chapters[index]
+            audio, data = segment_files(lang, index)
+            try:
+                duration, timings = await narrate_chapter(
+                    chapter, lang, VOICES[lang], self.speed, self.folder / audio,
+                    lead=LEAD_IN if index == 0 else CHAPTER_LEAD, tail=TAIL if last else CHAPTER_TAIL)
+                write_json(self.folder / data, {"duration": duration, "scenes": [chapter_scene(chapter, timings, duration)],
+                                                "captions": captions_from([timings])})
+            except Exception as err:
+                reason = str(err) or ("the voice service timed out" if isinstance(err, asyncio.TimeoutError) else type(err).__name__)
+                self.error = self.error or f"Chapter '{chapter['chapter']}' ({lang}): {reason}"
+                if lang == self.langs[0] and index == 0:
+                    self.start_failed = True
+                    self.first_ready.set()
+                raise
+            self.durations[lang][index] = duration
+            self.write_manifest(lang)
+            if lang == self.langs[0] and index == 0:
+                self.first_ready.set()
+
+    async def run(self):
+        """Record every missing chapter. Returns once all of them are done or have failed."""
+        for lang in self.langs:
+            self.write_manifest(lang)
+        if self.durations[self.langs[0]][0] is not None:
+            self.first_ready.set()
+        slots = asyncio.Semaphore(CONCURRENT_CHAPTERS)
+        results = await asyncio.gather(*(self._record(lang, i, slots) for lang in self.langs
+                                         for i in range(len(self.chapters))), return_exceptions=True)
+        failures = [r for r in results if isinstance(r, BaseException)]
+        if failures:
+            print(f"[!] CRIF story {self.sid}: {len(failures)} chapter(s) failed: {self.error}")
+        self.finished = True
+        if self.start_failed:
+            shutil.rmtree(self.folder, ignore_errors=True)   # nothing playable was produced
+        else:
+            for lang in self.langs:
+                self.write_manifest(lang)
+        self.first_ready.set()
+
+
+def is_complete(folder: Path, langs: List[str]) -> bool:
+    """True when every language's manifest says ready and all its segment files exist."""
+    for lang in langs:
+        try:
+            manifest = json.loads((folder / f"story.{lang}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        segments = manifest.get("segments") or []
+        if manifest.get("status") != "ready" or not segments or not all(
+                (folder / s.get("audio", "")).is_file() and (folder / s.get("data", "")).is_file() for s in segments):
+            return False
+    return True

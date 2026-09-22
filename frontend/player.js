@@ -7,6 +7,9 @@
   const CONFIG = Object.assign({ storyUrl: 'data/story.hi.json' }, window.STORY_PLAYER_CONFIG);
   const ICONS = window.ICONS || {};
   const params = new URLSearchParams(location.search);
+  // Embedded in an app (Flutter WebView, React iframe): no builder, full-screen player, events
+  // posted to the host. Set by index.html from ?embed=1, or automatically inside an iframe.
+  const EMBED = document.documentElement.hasAttribute('data-embed');
 
   const EASE = 'cubic-bezier(.2,.8,.2,1)';
   const RISE = [
@@ -40,16 +43,34 @@
   const state = {
     story: null,
     storyUrl: '',
-    scenes: [],
-    duration: 0,
+    segs: [],              // narration segments, see buildSegs()
+    scenes: [],            // scenes of every loaded segment, on the story clock
+    captions: [],
+    duration: 0,           // whole story, with estimates for chapters still being recorded
+    available: 0,          // end of the part that is recorded, from the start without gaps
+    estimated: false,
+    pos: { seg: 0, local: 0 },  // playhead: segment and seconds into it
+    bound: -1,             // segment whose audio is loaded in the <audio> element
+    bindToken: 0,
+    wantPlay: false,       // the viewer wants it playing (it may be waiting for a chapter)
+    waiting: false,
+    waitTimer: 0,
+    expectPause: 0,        // pause / play events we caused ourselves, so the rest can be told
+    expectPlay: 0,         // apart as coming from the system (calls, lock screen, headset)
+    scrubbing: false,
+    scrubT: 0,
     active: null,
-    activeIdx: -1,
+    activeKey: null,
+    chapterKey: null,
     lastT: -1,
     captionsOn: true,
     caption: null,
     captionWords: [],
-    segments: [],
     loadToken: 0,
+    pollTimer: 0,
+    pollFails: 0,
+    lastChange: 0,
+    reported: { playing: false, at: 0, t: -1 },
   };
 
   // ---------------------------------------------------------------- helpers
@@ -76,7 +97,7 @@
 
   function icon(name) {
     const holder = el('span');
-    holder.innerHTML = ICONS[name] || ICONS.info || '';
+    holder.innerHTML = (Object.prototype.hasOwnProperty.call(ICONS, name) && ICONS[name]) || ICONS.info || '';
     return holder.firstElementChild || holder;
   }
 
@@ -209,11 +230,15 @@
 
   function renderScoreDial(scene, root, tl) {
     const p = scene.props || {};
-    const min = p.min ?? 300;
-    const max = p.max ?? 900;
+    const min = Number(p.min ?? 300) || 0;
+    const max = Number(p.max ?? 900) || 900;
     const score = clamp(Math.round(p.score ?? min), min, max);
     const from = clamp(p.count_from ?? min, min, max);
-    const bands = Array.isArray(p.bands) && p.bands.length ? p.bands : DEFAULT_BANDS;
+    // Band colours go into SVG markup, so only plain colour values are accepted.
+    const bands = (Array.isArray(p.bands) && p.bands.length ? p.bands : DEFAULT_BANDS).map((b) => ({
+      ...b, from: Number(b.from) || 0, to: Number(b.to) || 0,
+      color: /^(#[0-9a-f]{3,8}|rgba?\([\d\s.,%]+\))$/i.test(String(b.color)) ? b.color : '#8e8e93',
+    }));
     const tone = (p.status && p.status.tone) || 'good';
 
     const head = sceneHead(root, { eyebrow: p.eyebrow, title: p.title });
@@ -770,20 +795,440 @@
     list: renderList,
   };
 
-  // ---------------------------------------------------------------- engine
+  // ---------------------------------------------------------------- segments
+  // The narration is a list of segments played back to back on the one <audio> element. One
+  // element, because a single tap on Play then unlocks audio for the whole story on iOS and in
+  // Android WebViews. A single-file story is one segment. A generated CRIF story has one
+  // segment per chapter, and while it is still being recorded the player polls its manifest
+  // and picks up new chapters as they appear. The playhead is kept as (segment, time within
+  // it), because the start times of later segments move as estimates become real durations.
 
-  function sceneIndexAt(t) {
-    let idx = 0;
-    for (let i = 0; i < state.scenes.length; i++) {
-      if (state.scenes[i].start <= t) idx = i;
-    }
-    return state.scenes.length ? idx : -1;
+  const POLL_MS = 1500;
+  const STALL_MS = 3 * 60 * 1000;   // no new chapter for this long: the recording has stopped
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function segLen(seg) {
+    return seg.ready ? seg.duration : seg.estimate;
   }
+
+  function makeSeg(raw, base, seg = { data: null, blobUrl: null, audioJob: null, dataJob: null }) {
+    const ready = Boolean(raw.ready);
+    return Object.assign(seg, {
+      id: raw.id || '',
+      chapter: raw.chapter || '',
+      theme: raw.theme || null,
+      ready,
+      duration: ready ? Number(raw.duration) || 0 : null,
+      estimate: Math.max(0, Number(raw.estimate) || 0),
+      audioUrl: ready ? new URL(raw.audio, base).href : null,
+      dataUrl: ready ? new URL(raw.data, base).href : null,
+    });
+  }
+
+  function buildSegs(story, base) {
+    if (Array.isArray(story.segments)) return story.segments.map((raw) => makeSeg(raw, base));
+    return [{
+      id: 'story', chapter: '', theme: null, ready: true, single: true, estimate: 0,
+      duration: Number(story.audio.duration) || 0,
+      audioUrl: new URL(story.audio.src, base).href, dataUrl: null,
+      data: { scenes: story.scenes, captions: story.captions || [] }, blobUrl: null, audioJob: null, dataJob: null,
+    }];
+  }
+
+  // Puts every loaded segment's scenes and captions on the story clock.
+  function rebuildTimeline() {
+    const scenes = [];
+    const captions = [];
+    let offset = 0;
+    let available = 0;
+    let gap = false;
+    state.segs.forEach((seg, i) => {
+      seg.offset = offset;
+      if (seg.ready && !gap) available = offset + segLen(seg);
+      else gap = true;
+      if (seg.data) {
+        const at = (x) => Math.round((offset + (Number(x) || 0)) * 1000) / 1000;
+        seg.data.scenes.forEach((scene, j) => {
+          scenes.push({ ...scene, start: at(scene.start), end: at(scene.end), key: `${i}:${j}`, seg: i });
+        });
+        (seg.data.captions || []).forEach((c) => captions.push({
+          ...c, start: at(c.start), end: at(c.end),
+          words: Array.isArray(c.words) ? c.words.map((w) => ({ ...w, start: at(w.start) })) : null,
+        }));
+      }
+      offset += segLen(seg);
+    });
+    scenes.sort((a, b) => a.start - b.start);
+    state.scenes = scenes;
+    state.captions = captions;
+    state.duration = offset;
+    state.available = available;
+    state.estimated = state.segs.some((s) => !s.ready);
+  }
+
+  function segIndexAt(t) {
+    const segs = state.segs;
+    for (let i = 0; i < segs.length; i++) if (t < segs[i].offset + segLen(segs[i])) return i;
+    return segs.length - 1;
+  }
+
+  function posAt(t) {
+    const max = state.duration > 0 ? state.duration - 0.05 : Infinity;
+    const at = clamp(t, 0, Math.max(0, max));
+    const k = segIndexAt(at);
+    return { seg: k, local: at - state.segs[k].offset };
+  }
+
+  // The scene on screen at t: the latest scene of t's segment that has started.
+  function sceneAt(t) {
+    const k = segIndexAt(t);
+    let hit = null;
+    let first = null;
+    for (const scene of state.scenes) {
+      if (scene.seg !== k) continue;
+      first = first || scene;
+      if (scene.start <= t) hit = scene;
+    }
+    return hit || first;
+  }
+
+  async function fetchRetry(url, tries = 3) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (res.status >= 500 && attempt < tries) throw new Error(`HTTP ${res.status}`);
+        return res;
+      } catch (err) {
+        if (attempt >= tries) throw err;
+        await sleep(600 * attempt);
+      }
+    }
+  }
+
+  async function fetchJson(url, tries = 3) {
+    const res = await fetchRetry(url, tries);
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} while fetching\n${url}`);
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      throw new Error(`Invalid JSON in ${url}\n${err.message}`);
+    }
+  }
+
+  // Audio is fetched into a Blob URL so seeking works on any static server (python -m
+  // http.server has no Range support) and the next chapter switches in instantly. Falls back
+  // to streaming the URL directly if the fetch is blocked, e.g. by CORS.
+  function loadSegAudio(seg) {
+    if (seg.blobUrl) return Promise.resolve(seg.blobUrl);
+    if (!seg.audioJob) {
+      seg.audioJob = (async () => {
+        try {
+          const res = await fetchRetry(seg.audioUrl);
+          if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} while fetching the audio\n${seg.audioUrl}`);
+          seg.blobUrl = URL.createObjectURL(await res.blob());
+        } catch (err) {
+          if (!(err instanceof TypeError)) throw err;
+          console.warn('Audio fetch failed, streaming it directly instead', err);
+          seg.blobUrl = seg.audioUrl;
+        }
+        return seg.blobUrl;
+      })().catch((err) => { seg.audioJob = null; throw err; });
+    }
+    return seg.audioJob;
+  }
+
+  function loadSegData(seg) {
+    if (seg.data) return Promise.resolve(seg.data);
+    if (!seg.dataJob) {
+      const token = state.loadToken;
+      seg.dataJob = fetchJson(seg.dataUrl).then((data) => {
+        const problems = [];
+        if (!data || !Array.isArray(data.scenes) || !data.scenes.length) problems.push('scenes must be a non-empty array');
+        else sceneProblems(data.scenes, problems);
+        if (problems.length) throw new Error(`${seg.dataUrl} has ${problems.length} problem(s):\n• ${problems.join('\n• ')}`);
+        seg.data = data;
+        if (token === state.loadToken) {
+          rebuildTimeline();
+          render(true);
+        }
+        return data;
+      }).catch((err) => { seg.dataJob = null; throw err; });
+    }
+    return seg.dataJob;
+  }
+
+  // Loads the next chapters' audio ahead of time, and every recorded chapter's scene data
+  // (a few KB each) so scrubbing can preview any part that is ready.
+  function prefetch(k) {
+    [k + 1, k + 2].forEach((i) => {
+      const seg = state.segs[i];
+      if (seg && seg.ready) loadSegAudio(seg).catch(() => {});
+    });
+    state.segs.forEach((seg) => { if (seg.ready && !seg.data) loadSegData(seg).catch(() => {}); });
+  }
+
+  function releaseMedia() {
+    internalPause();
+    state.bound = -1;
+    state.bindToken++;
+    setWaiting(false);
+    state.segs.forEach((seg) => { if (seg.blobUrl && seg.blobUrl.startsWith('blob:')) URL.revokeObjectURL(seg.blobUrl); });
+  }
+
+  // ---------------------------------------------------------------- playback
+
+  function internalPause() {
+    if (!audio.paused) {
+      state.expectPause++;
+      audio.pause();
+    }
+  }
+
+  function startAudio() {
+    const counted = audio.paused;
+    if (counted) state.expectPlay++;
+    const attempt = audio.play();
+    if (attempt && attempt.catch) {
+      attempt.catch((err) => {
+        if (!err || err.name !== 'NotAllowedError') return;   // AbortError: a pause or new source won the race
+        if (counted) state.expectPlay = Math.max(0, state.expectPlay - 1);   // no play event comes
+        // Autoplay was blocked (no tap yet): fall back to the start screen's Play button.
+        if (state.wantPlay) {
+          state.wantPlay = false;
+          syncPlayState();
+          showStart();
+        }
+      });
+    }
+  }
+
+  function setSource(url) {
+    return new Promise((resolve, reject) => {
+      const done = (fn) => () => {
+        audio.removeEventListener('loadedmetadata', onOk);
+        audio.removeEventListener('error', onErr);
+        fn();
+      };
+      const onOk = done(resolve);
+      const onErr = done(() => reject(new Error(`Could not play the audio file:\n${url}`)));
+      audio.addEventListener('loadedmetadata', onOk);
+      audio.addEventListener('error', onErr);
+      audio.src = url;
+      audio.load();
+    });
+  }
+
+  function mediaLength(seg) {
+    return Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : segLen(seg);
+  }
+
+  // Makes the <audio> element match the playhead: same segment only moves currentTime,
+  // another segment is fetched and swapped in, a chapter still being recorded waits for it.
+  async function bindCurrent() {
+    const k = state.pos.seg;
+    const seg = state.segs[k];
+    if (!seg) return;
+    if (state.bound === k) {
+      const local = clamp(state.pos.local, 0, Math.max(0, mediaLength(seg) - 0.05));
+      if (Math.abs(audio.currentTime - local) > 0.02) audio.currentTime = local;
+      setWaiting(false);
+      if (state.wantPlay) startAudio();
+      return;
+    }
+    const token = ++state.bindToken;
+    internalPause();
+    state.bound = -1;
+    setWaiting(true);
+    if (!seg.ready) {
+      checkGeneration();
+      return;
+    }
+    try {
+      await Promise.all([loadSegAudio(seg), loadSegData(seg)]);
+      if (token !== state.bindToken) return;
+      await setSource(seg.blobUrl);
+    } catch (err) {
+      if (token === state.bindToken) showError(err, seg.audioUrl);
+      return;
+    }
+    if (token !== state.bindToken) return;
+    state.bound = k;
+    if (seg.single && Number.isFinite(audio.duration) && Math.abs(audio.duration - seg.duration) > 0.01) {
+      seg.duration = audio.duration;
+      rebuildTimeline();
+    }
+    audio.currentTime = clamp(state.pos.local, 0, Math.max(0, mediaLength(seg) - 0.05));
+    setWaiting(false);
+    if (state.wantPlay) startAudio();
+    prefetch(k);
+    render(true);
+  }
+
+  function onSegmentEnded() {
+    const k = state.bound;
+    if (k < 0) return;
+    if (k < state.segs.length - 1) {
+      state.pos = { seg: k + 1, local: 0 };
+      bindCurrent();
+      return;
+    }
+    state.wantPlay = false;
+    syncPlayState();
+    render(true);
+    showEndCard();
+    emit('ended');
+  }
+
+  function atEnd() {
+    const last = state.segs.length - 1;
+    return state.pos.seg === last && state.pos.local >= segLen(state.segs[last]) - 0.1;
+  }
+
+  // Called straight from taps, so the play() inside bindCurrent's fast path runs within the
+  // gesture, which is what lets iOS and WebViews start audio.
+  function play() {
+    if (!state.story || !state.segs.length) return;
+    hideOverlays();
+    if (atEnd()) state.pos = { seg: 0, local: 0 };
+    state.wantPlay = true;
+    syncPlayState();
+    bindCurrent();
+  }
+
+  function pause() {
+    state.wantPlay = false;
+    internalPause();
+    syncPlayState();
+  }
+
+  function togglePlay() {
+    if (!state.story) return;
+    if (state.wantPlay) pause();
+    else play();
+  }
+
+  function goTo(k, local) {
+    if (!state.segs[k]) return;
+    state.pos = { seg: k, local: Math.max(0, local) };
+    $('endCard').hidden = true;
+    bindCurrent();
+    render(true);
+  }
+
+  function seek(t) {
+    if (!state.story || !state.segs.length) return;
+    const pos = posAt(t);
+    goTo(pos.seg, pos.local);
+  }
+
+  function setWaiting(on) {
+    state.waiting = on;
+    clearTimeout(state.waitTimer);
+    if (!on) {
+      show('buffering', false);
+    } else {
+      const seg = state.segs[state.pos.seg];
+      $('bufferingText').textContent = seg && !seg.ready ? 'Recording this chapter…' : 'Loading…';
+      // Only shown if the wait is noticeable, so switching chapters doesn't flash it.
+      state.waitTimer = setTimeout(() => { if (state.waiting) show('buffering', true); }, 300);
+    }
+    syncPlayState();
+  }
+
+  // ---------------------------------------------------------------- generation (polling)
+
+  function startPolling() {
+    clearTimeout(state.pollTimer);
+    if (!state.story || state.story.status !== 'generating') return;
+    const token = state.loadToken;
+    const poll = async () => {
+      if (token !== state.loadToken) return;
+      try {
+        const next = await fetchJson(state.storyUrl, 1);
+        if (token !== state.loadToken) return;
+        validate(next);
+        applyManifest(next);
+        state.pollFails = 0;
+      } catch (err) {
+        state.pollFails++;
+        if (/HTTP 404/.test(err.message)) {
+          markStopped('This video has expired.');
+          return;
+        }
+      }
+      if (token !== state.loadToken || state.story.status !== 'generating') return;
+      if (Date.now() - state.lastChange > STALL_MS) {
+        markStopped('Recording stopped before the whole video was ready.');
+        return;
+      }
+      state.pollTimer = setTimeout(poll, Math.min(10000, POLL_MS * (1 + state.pollFails)));
+    };
+    state.pollTimer = setTimeout(poll, POLL_MS);
+  }
+
+  function applyManifest(next) {
+    if (!Array.isArray(next.segments) || next.segments.length !== state.segs.length) return;
+    let changed = false;
+    next.segments.forEach((raw, i) => {
+      const seg = state.segs[i];
+      if (!seg.ready && (raw.ready || Number(raw.estimate) !== seg.estimate)) {
+        makeSeg(raw, state.storyUrl, seg);
+        changed = true;
+      }
+    });
+    const statusChanged = next.status !== state.story.status;
+    Object.assign(state.story, { status: next.status, error: next.error, intro: next.intro || state.story.intro });
+    if (changed) {
+      state.lastChange = Date.now();
+      rebuildTimeline();
+      buildDevScenes();
+      prefetch(state.pos.seg);
+    }
+    if (changed || statusChanged) emitGeneration();
+    checkGeneration();
+    render(true);
+  }
+
+  // Resumes a playhead that was waiting for a chapter, or reports that it will never come.
+  function checkGeneration() {
+    const seg = state.segs[state.pos.seg];
+    if (!seg || state.bound === state.pos.seg) return;
+    if (seg.ready) {
+      if (state.waiting) bindCurrent();
+    } else if (state.story.status === 'failed') {
+      const err = new Error(state.story.error || 'This chapter could not be recorded.');
+      err.generation = true;
+      showError(err, state.storyUrl);
+    }
+  }
+
+  function markStopped(message) {
+    clearTimeout(state.pollTimer);
+    state.story.status = 'failed';
+    state.story.error = state.story.error || message;
+    emitGeneration();
+    checkGeneration();
+  }
+
+  function emitGeneration() {
+    const detail = {
+      status: state.story.status,
+      ready: state.segs.filter((s) => s.ready).length,
+      total: state.segs.length,
+      error: state.story.error || null,
+    };
+    window.dispatchEvent(new CustomEvent('story:generation', { detail }));
+    emit('generation', detail);
+  }
+
+  // ---------------------------------------------------------------- engine
 
   function unmountActive(animate) {
     const prev = state.active;
     state.active = null;
-    state.activeIdx = -1;
+    state.activeKey = null;
     if (!prev) return;
     if (!animate) {
       prev.tl.destroy();
@@ -794,10 +1239,9 @@
     setTimeout(() => { prev.tl.destroy(); prev.root.remove(); }, 400);
   }
 
-  function mountScene(idx) {
+  function mountScene(scene) {
     unmountActive(true);
-    if (idx < 0) return;
-    const scene = state.scenes[idx];
+    if (!scene) return;
     const root = el('section', 'scene');
     root.dataset.type = scene.type;
     root.dataset.id = scene.id || '';
@@ -812,23 +1256,35 @@
       renderUnknown({ ...scene, type: `${scene.type} (error: ${err.message})` }, root);
     }
     state.active = { scene, root, tl };
-    state.activeIdx = idx;
+    state.activeKey = scene.key;
     phone.dataset.theme = scene.theme || 'blue';
-    $('chapterLabel').textContent = scene.chapter || '';
-    highlightDevScene(idx);
+    highlightDevScene(scene);
+  }
+
+  // Story time now: the scrub position while dragging, otherwise the playhead (read from the
+  // audio element while its segment is loaded).
+  function now() {
+    if (state.scrubbing) return state.scrubT;
+    const seg = state.segs[state.pos.seg];
+    if (!seg) return 0;
+    if (state.bound === state.pos.seg) state.pos.local = audio.currentTime;
+    return seg.offset + state.pos.local;
   }
 
   function render(force) {
     if (!state.story) return;
-    const t = audio.currentTime || 0;
+    const t = now();
     if (!force && t === state.lastT) return;
     state.lastT = t;
-    const idx = sceneIndexAt(t);
-    if (idx !== state.activeIdx) mountScene(idx);
+    const scene = sceneAt(t);
+    if ((scene ? scene.key : null) !== state.activeKey) mountScene(scene);
+    else if (scene && state.active) state.active.scene = scene;
     if (state.active) state.active.tl.seek(t - state.active.scene.start);
+    updateChapter(t);
     updateProgress(t);
     updateCaptions(t);
     updateReadout(t);
+    reportTime(t);
   }
 
   function tick() {
@@ -838,32 +1294,57 @@
 
   // ---------------------------------------------------------------- chrome
 
-  function buildSegments() {
-    const wrap = $('segments');
-    wrap.replaceChildren();
-    state.segments = state.scenes.map((scene) => {
-      const seg = el('div', 'seg');
-      seg.title = scene.chapter || scene.id || '';
-      const fill = el('div', 'seg-fill');
-      seg.append(fill);
-      wrap.append(seg);
-      return fill;
-    });
+  function updateChapter(t) {
+    const k = segIndexAt(t);
+    const seg = state.segs[k];
+    const scene = state.active && state.active.scene;
+    const title = (scene && scene.chapter) || (seg && seg.chapter) || '';
+    const label = $('chapterLabel');
+    if (label.textContent !== title) label.textContent = title;
+    if (!scene && seg && seg.theme) phone.dataset.theme = seg.theme;
+    const key = scene ? scene.key : `seg:${k}`;
+    if (key !== state.chapterKey && !state.scrubbing) {   // previews while dragging aren't reported
+      state.chapterKey = key;
+      const multi = state.segs.length > 1;
+      emit('chapter', {
+        index: multi ? k : Math.max(0, state.scenes.indexOf(scene)),
+        count: multi ? state.segs.length : state.scenes.length,
+        id: multi ? seg.id : (scene && scene.id) || '',
+        title,
+      });
+    }
   }
 
   function updateProgress(t) {
-    state.scenes.forEach((scene, i) => {
-      const f = clamp((t - scene.start) / Math.max(0.001, scene.end - scene.start), 0, 1);
-      state.segments[i].style.width = `${(f * 100).toFixed(2)}%`;
-    });
-    $('timeLabel').textContent = `${clock(t)} / ${clock(state.duration)}`;
+    const d = Math.max(0.001, state.duration);
+    const played = clamp(t / d, 0, 1) * 100;
+    $('scrubFill').style.width = `${played.toFixed(3)}%`;
+    $('scrubThumb').style.left = `${played.toFixed(3)}%`;
+    $('scrubReady').style.width = `${(clamp(state.available / d, 0, 1) * 100).toFixed(3)}%`;
+    const total = `${state.estimated ? '~' : ''}${clock(state.duration)}`;
+    $('timeLabel').textContent = `${clock(t)} / ${total}`;
+    const scrub = $('scrub');
+    scrub.setAttribute('aria-valuemax', String(Math.round(state.duration)));
+    scrub.setAttribute('aria-valuenow', String(Math.round(t)));
+    scrub.setAttribute('aria-valuetext', `${clock(t)} of ${total}`);
+
+    const tip = $('scrubTip');
+    tip.hidden = !state.scrubbing;
+    if (state.scrubbing) {
+      const scene = sceneAt(t);
+      const seg = state.segs[segIndexAt(t)];
+      $('scrubTipTime').textContent = clock(t);
+      $('scrubTipChapter').textContent = (scene && scene.chapter) || (seg && seg.chapter) || '';
+      const width = $('scrubTrack').clientWidth;
+      const half = tip.offsetWidth / 2;
+      tip.style.left = `${clamp((played / 100) * width, half, Math.max(half, width - half))}px`;
+    }
   }
 
   function updateCaptions(t) {
     const box = $('captions');
-    const caps = (state.story && state.story.captions) || [];
     const current = state.captionsOn
-      ? caps.find((c) => t >= c.start - 0.15 && t <= c.end + 0.5) || null
+      ? state.captions.find((c) => t >= c.start - 0.15 && t <= c.end + 0.5) || null
       : null;
     if (current !== state.caption) {
       state.caption = current;
@@ -896,20 +1377,29 @@
   function buildDevScenes() {
     const list = $('devScenes');
     list.replaceChildren();
-    state.scenes.forEach((scene, i) => {
+    const item = (key, name, from, to, onClick) => {
       const li = el('li');
       const btn = el('button');
       btn.type = 'button';
-      btn.dataset.idx = i;
-      btn.append(el('span', '', scene.id || scene.type), el('span', '', `${scene.start.toFixed(1)}–${scene.end.toFixed(1)}s`));
-      btn.addEventListener('click', () => seek(scene.start));
+      btn.dataset.key = key;
+      btn.append(el('span', '', name), el('span', '', `${from.toFixed(1)}–${to.toFixed(1)}s`));
+      btn.addEventListener('click', onClick);
       li.append(btn);
       list.append(li);
-    });
+    };
+    if (state.segs.length > 1) {
+      state.segs.forEach((seg, i) => item(`seg:${i}`, `${seg.id}${seg.ready ? '' : ' · recording'}`,
+        seg.offset, seg.offset + segLen(seg), () => goTo(i, 0)));
+    } else {
+      state.scenes.forEach((scene) => item(scene.key, scene.id || scene.type, scene.start, scene.end, () => seek(scene.start)));
+    }
+    if (state.active) highlightDevScene(state.active.scene);
   }
 
-  function highlightDevScene(idx) {
-    document.querySelectorAll('#devScenes button').forEach((b) => b.classList.toggle('is-active', Number(b.dataset.idx) === idx));
+  function highlightDevScene(scene) {
+    document.querySelectorAll('#devScenes button').forEach((b) => {
+      b.classList.toggle('is-active', b.dataset.key === scene.key || b.dataset.key === `seg:${scene.seg}`);
+    });
   }
 
   function buildBrand() {
@@ -927,12 +1417,20 @@
     render(true);
   }
 
-  function syncPlayButton() {
-    const playing = !audio.paused && !audio.ended;
-    phone.classList.toggle('is-paused', !playing);
+  function syncPlayState() {
+    const playing = state.wantPlay;
+    phone.classList.toggle('is-paused', !playing || audio.paused || state.waiting);
     const btn = $('playBtn');
-    btn.innerHTML = playing ? ICONS.pause : ICONS.play;
-    btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    const mode = playing ? 'pause' : 'play';
+    if (btn.dataset.mode !== mode) {
+      btn.dataset.mode = mode;
+      btn.innerHTML = ICONS[mode];
+      btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    }
+    if (state.story && playing !== state.reported.playing) {
+      state.reported.playing = playing;
+      emit(playing ? 'play' : 'pause', { time: round2(now()) });
+    }
   }
 
   function show(id, visible) {
@@ -944,25 +1442,6 @@
     closeSheet();
   }
 
-  function play() {
-    hideOverlays();
-    if (audio.ended || audio.currentTime >= state.duration - 0.05) audio.currentTime = 0;
-    audio.play().catch(() => showStart());
-  }
-
-  function togglePlay() {
-    if (!state.story) return;
-    if (audio.paused) play();
-    else audio.pause();
-  }
-
-  function seek(t) {
-    if (!state.story) return;
-    $('endCard').hidden = true;
-    audio.currentTime = clamp(t, 0, Math.max(0, state.duration - 0.01));
-    render(true);
-  }
-
   function showStart() {
     hideOverlays();
     const story = state.story || {};
@@ -971,9 +1450,10 @@
     title.replaceChildren(...rich('span', '', intro.title || story.title || '').childNodes);
     $('startSub').textContent = intro.subtitle || '';
     const lang = (story.languages || []).find((l) => l.code === story.language);
+    const chapters = state.segs.length > 1 ? state.segs.length : state.scenes.length;
     const meta = $('startMeta');
     meta.replaceChildren();
-    [clock(state.duration), lang ? lang.label : story.language, `${state.scenes.length} chapters`]
+    [`${state.estimated ? '~' : ''}${clock(state.duration)}`, lang ? lang.label : story.language, `${chapters} chapters`]
       .filter(Boolean).forEach((text) => meta.append(el('span', '', text)));
     const badges = $('startBadges');
     badges.replaceChildren();
@@ -1006,19 +1486,26 @@
 
   function showError(err, url) {
     console.error(err);
+    state.wantPlay = false;
+    internalPause();
+    syncPlayState();
     hideOverlays();
-    $('errorText').textContent = err && err.message ? err.message : String(err);
+    const message = err && err.message ? err.message : String(err);
+    $('errorText').textContent = message;
     const hint = $('errorHint');
     hint.replaceChildren();
     if (location.protocol === 'file:') {
       hint.append('This page was opened from disk, so the browser blocks loading the JSON. Serve the folder instead, e.g. ',
         el('code', '', 'python3 -m http.server 8080 --directory frontend'), ' and open ', el('code', '', 'http://localhost:8080'), '.');
-    } else if (/HTTP 404/.test(String(err && err.message)) && /\/stories\//.test(String(url))) {
+    } else if (err && err.generation) {
+      hint.append('Part of this video could not be recorded. Generate it again: the chapters that are already recorded are reused, so it is quick.');
+    } else if (/HTTP 404/.test(message) && /\/stories\//.test(String(url))) {
       hint.append('This video has expired. Generated videos are only kept for a limited time (24 hours by default), so generate it again from the CRIF report tab.');
     } else {
       hint.append('Tried to load ', el('code', '', url), '. Fix the file, pick another one in the Story file tab, or generate a new story.');
     }
     show('errorBox', true);
+    emit('error', { message });
   }
 
   // ---------------------------------------------------------------- language sheet
@@ -1053,91 +1540,91 @@
     show('langSheet', false);
   }
 
+  // Reopens the same chapter in the other language.
   function switchLanguage(lang) {
     closeSheet();
-    if (!lang.src || lang.code === state.story.language) return;
-    const wasPlaying = !audio.paused;
-    const sceneId = state.active && state.active.scene.id;
-    audio.pause();
+    if (!lang || !lang.src || lang.code === state.story.language) return;
+    const t = now();
+    const scene = state.active && state.active.scene;
+    const resumeId = state.segs.length > 1 ? state.segs[segIndexAt(t)].id : scene && scene.id;
+    emit('language', { code: lang.code });
     loadStory(new URL(lang.src, state.storyUrl).href, {
-      resumeSceneId: sceneId, play: wasPlaying, stayPaused: true, captions: state.captionsOn,
+      resumeId, play: state.wantPlay, stayPaused: true, captions: state.captionsOn,
     });
   }
 
   // ---------------------------------------------------------------- loading
 
+  function sceneProblems(scenes, problems, prefix = 'scenes') {
+    scenes.forEach((scene, i) => {
+      const where = `${prefix}[${i}]${scene && scene.id ? ` ("${scene.id}")` : ''}`;
+      if (!scene || typeof scene !== 'object') { problems.push(`${where} must be an object`); return; }
+      if (typeof scene.type !== 'string') problems.push(`${where}.type is required`);
+      if (!Number.isFinite(scene.start) || !Number.isFinite(scene.end)) problems.push(`${where}.start and .end must be numbers (seconds)`);
+      else if (scene.end <= scene.start) problems.push(`${where}.end must be greater than .start`);
+      if (scene.beats != null && !Array.isArray(scene.beats)) problems.push(`${where}.beats must be an array`);
+    });
+  }
+
   function validate(story) {
     const problems = [];
     if (!story || typeof story !== 'object' || Array.isArray(story)) throw new Error('The story JSON must be an object.');
-    if (!story.audio || typeof story.audio.src !== 'string' || !story.audio.src) problems.push('audio.src is required (path or URL of the narration audio)');
-    if (!Array.isArray(story.scenes) || !story.scenes.length) {
-      problems.push('scenes must be a non-empty array');
-    } else {
-      story.scenes.forEach((scene, i) => {
-        const where = `scenes[${i}]${scene && scene.id ? ` ("${scene.id}")` : ''}`;
-        if (!scene || typeof scene !== 'object') { problems.push(`${where} must be an object`); return; }
-        if (typeof scene.type !== 'string') problems.push(`${where}.type is required`);
-        if (!Number.isFinite(scene.start) || !Number.isFinite(scene.end)) problems.push(`${where}.start and .end must be numbers (seconds)`);
-        else if (scene.end <= scene.start) problems.push(`${where}.end must be greater than .start`);
-        if (scene.beats != null && !Array.isArray(scene.beats)) problems.push(`${where}.beats must be an array`);
+    if (Array.isArray(story.segments)) {
+      if (!story.segments.length) problems.push('segments must be a non-empty array');
+      story.segments.forEach((s, i) => {
+        const where = `segments[${i}]${s && s.id ? ` ("${s.id}")` : ''}`;
+        if (!s || typeof s !== 'object') { problems.push(`${where} must be an object`); return; }
+        if (!s.ready) return;
+        if (typeof s.audio !== 'string' || !s.audio) problems.push(`${where}.audio is required once the segment is ready`);
+        if (typeof s.data !== 'string' || !s.data) problems.push(`${where}.data is required once the segment is ready`);
+        if (!(Number(s.duration) > 0)) problems.push(`${where}.duration must be a positive number of seconds`);
       });
+    } else {
+      if (!story.audio || typeof story.audio.src !== 'string' || !story.audio.src) problems.push('audio.src is required (path or URL of the narration audio)');
+      if (!Array.isArray(story.scenes) || !story.scenes.length) problems.push('scenes must be a non-empty array');
+      else sceneProblems(story.scenes, problems);
+      if (story.captions != null && !Array.isArray(story.captions)) problems.push('captions must be an array');
     }
-    if (story.captions != null && !Array.isArray(story.captions)) problems.push('captions must be an array');
     if (problems.length) throw new Error(`The story JSON has ${problems.length} problem(s):\n• ${problems.join('\n• ')}`);
   }
 
-  // The narration is fetched into a Blob URL so seeking works on any static server
-  // (python -m http.server has no Range support, which makes streamed audio unseekable).
-  // Falls back to streaming the URL directly if the fetch is blocked, e.g. by CORS.
-  async function loadAudio(src) {
-    let playable = src;
-    try {
-      const res = await fetch(src, { cache: 'no-cache' });
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} while fetching the audio\n${src}`);
-      playable = URL.createObjectURL(await res.blob());
-    } catch (err) {
-      if (err instanceof TypeError) console.warn('Audio fetch failed, streaming it directly instead', err);
-      else throw err;
+  function startPosition(opts) {
+    if (opts.resumeId) {
+      const i = state.segs.length > 1 ? state.segs.findIndex((s) => s.id === opts.resumeId) : -1;
+      if (i >= 0) return { seg: i, local: 0 };
+      const scene = state.scenes.find((s) => s.id === opts.resumeId);
+      if (scene) return posAt(scene.start);
     }
-    await new Promise((resolve, reject) => {
-      const done = (fn) => () => {
-        audio.removeEventListener('loadedmetadata', onOk);
-        audio.removeEventListener('error', onErr);
-        fn();
-      };
-      const onOk = done(resolve);
-      const onErr = done(() => reject(new Error(`Could not play the audio file:\n${src}`)));
-      audio.addEventListener('loadedmetadata', onOk);
-      audio.addEventListener('error', onErr);
-      const previous = audio.src;
-      audio.src = playable;
-      audio.load();
-      if (previous.startsWith('blob:')) URL.revokeObjectURL(previous);
-    });
+    return Number.isFinite(opts.seekTo) ? posAt(opts.seekTo) : { seg: 0, local: 0 };
+  }
+
+  // Waits until the playhead's segment is loaded in the <audio> element (it may still be
+  // recording). False if another story was loaded meanwhile or an error is on screen.
+  async function untilBound(token) {
+    bindCurrent();
+    while (state.bound !== state.pos.seg) {
+      await sleep(150);
+      if (token !== state.loadToken || !$('errorBox').hidden) return false;
+    }
+    return true;
   }
 
   async function loadStory(url, opts = {}) {
     const token = ++state.loadToken;
+    clearTimeout(state.pollTimer);
     hideOverlays();
     $('loaderTitle').textContent = 'Preparing your credit story';
     show('loader', true);
-    audio.pause();
+    state.wantPlay = false;
+    state.bindToken++;
+    internalPause();
 
     let story;
     let absUrl;
     try {
       absUrl = new URL(url, location.href).href;
-      const res = await fetch(absUrl, { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} while fetching\n${absUrl}`);
-      const text = await res.text();
-      try {
-        story = JSON.parse(text);
-      } catch (err) {
-        throw new Error(`Invalid JSON in ${absUrl}\n${err.message}`);
-      }
+      story = await fetchJson(absUrl);
       validate(story);
-      state.storyUrl = absUrl;
-      await loadAudio(resolveUrl(story.audio.src));
     } catch (err) {
       if (token === state.loadToken) showError(err, absUrl || url);
       return;
@@ -1145,38 +1632,44 @@
     if (token !== state.loadToken) return;
 
     unmountActive(false);
+    releaseMedia();
     state.story = story;
-    state.scenes = story.scenes.slice().sort((a, b) => a.start - b.start);
-    state.duration = Number.isFinite(audio.duration) ? audio.duration : Number(story.audio.duration) || 0;
+    state.storyUrl = absUrl;
+    state.segs = buildSegs(story, absUrl);
     state.lastT = -1;
     state.caption = undefined;
+    state.chapterKey = null;
+    state.lastChange = Date.now();
+    state.pollFails = 0;
+    state.reported = { playing: false, at: 0, t: -1 };
+    rebuildTimeline();
     $('captions').lang = story.language || '';
     $('devUrl').value = url;
     buildBrand();
-    buildSegments();
     buildDevScenes();
     buildLanguages();
     if (opts.captions != null) setCaptions(opts.captions);
     else if (story.player && typeof story.player.captions === 'boolean') setCaptions(story.player.captions);
+    state.pos = startPosition(opts);
+    startPolling();
+    emitGeneration();
 
-    let startAt = Number.isFinite(opts.seekTo) ? opts.seekTo : 0;
-    if (opts.resumeSceneId) {
-      const match = state.scenes.find((s) => s.id === opts.resumeSceneId);
-      if (match) startAt = match.start;
-    }
-    audio.currentTime = clamp(startAt, 0, Math.max(0, state.duration - 0.01));
+    if (!state.segs[state.pos.seg].ready) $('loaderTitle').textContent = 'Recording your video, just a few seconds…';
+    if (!(await untilBound(token))) return;
     render(true);
     show('loader', false);
     window.dispatchEvent(new CustomEvent('story:loaded', { detail: story }));
+    emit('loaded', snapshot());
 
     if (opts.play) play();
     else if (!opts.stayPaused) showStart();
   }
 
-  // Shows the loader while something else (the builder) prepares a story.
+  // Shows the loader while something else (the builder, or the host app) prepares a story.
   function busy(message) {
     state.loadToken++;
-    audio.pause();
+    clearTimeout(state.pollTimer);
+    pause();
     hideOverlays();
     $('loaderTitle').textContent = message || 'Preparing your credit story';
     show('loader', true);
@@ -1184,10 +1677,125 @@
 
   function cancelBusy() {
     show('loader', false);
-    if (state.story) showStart();
+    if (state.story) {
+      startPolling();
+      showStart();
+    }
+  }
+
+  // ---------------------------------------------------------------- embedding
+  // Events go to whichever host is listening: the parent page (iframe, window.postMessage),
+  // a Flutter webview_flutter JavaScriptChannel or flutter_inappwebview handler named
+  // ?bridge= (default StoryPlayerBridge), or a React Native WebView. Every message is
+  // { source: 'credit-story-player', type, ...details }. Hosts control the player with
+  // window.StoryPlayer.* (Flutter: runJavaScript) or, from a parent page, postMessage
+  // { target: 'credit-story-player', command: 'play' | 'pause' | 'toggle' | 'seek' (time) |
+  //   'load' (url, autoplay) | 'captions' (on) | 'language' (code) | 'state' }.
+
+  const BRIDGE = params.get('bridge') || 'StoryPlayerBridge';
+  const PARENT_ORIGIN = params.get('origin') || '*';
+  const round2 = (x) => Math.round(x * 100) / 100;
+
+  function emit(type, details = {}) {
+    const msg = { source: 'credit-story-player', type, ...details };
+    const text = JSON.stringify(msg);
+    try { if (window.parent !== window) window.parent.postMessage(msg, PARENT_ORIGIN); } catch (e) { /* host gone */ }
+    try { const ch = window[BRIDGE]; if (ch && typeof ch.postMessage === 'function') ch.postMessage(text); } catch (e) { /* no channel */ }
+    try { const iaw = window.flutter_inappwebview; if (iaw && iaw.callHandler) iaw.callHandler(BRIDGE, msg); } catch (e) { /* no handler */ }
+    try { if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(text); } catch (e) { /* not RN */ }
+  }
+
+  function snapshot() {
+    const scene = state.active && state.active.scene;
+    const seg = state.segs[state.pos.seg];
+    return {
+      storyId: state.story ? state.story.story_id || null : null,
+      language: state.story ? state.story.language || null : null,
+      status: state.story ? state.story.status || 'ready' : null,
+      time: round2(now()),
+      duration: round2(state.duration),
+      estimated: state.estimated,
+      playing: state.wantPlay,
+      waiting: state.waiting,
+      captions: state.captionsOn,
+      chapter: (scene && scene.chapter) || (seg && seg.chapter) || '',
+    };
+  }
+
+  // About once a second while playing, plus on every jump.
+  function reportTime(t) {
+    const r = state.reported;
+    const stamp = performance.now();
+    if (state.scrubbing || Math.abs(t - r.t) < 0.05) return;
+    if (stamp - r.at < 1000 && Math.abs(t - r.t) < 2) return;
+    r.at = stamp;
+    r.t = t;
+    emit('timeupdate', { time: round2(t), duration: round2(state.duration), estimated: state.estimated });
+  }
+
+  function setLanguage(code) {
+    const lang = ((state.story && state.story.languages) || []).find((l) => l.code === code);
+    if (lang) switchLanguage(lang);
+  }
+
+  function command(msg) {
+    switch (msg.command) {
+      case 'play': play(); break;
+      case 'pause': pause(); break;
+      case 'toggle': togglePlay(); break;
+      case 'seek': if (Number.isFinite(Number(msg.time))) seek(Number(msg.time)); break;
+      case 'load': if (typeof msg.url === 'string') loadStory(msg.url, { play: Boolean(msg.autoplay) }); break;
+      case 'captions': setCaptions(Boolean(msg.on)); break;
+      case 'language': setLanguage(msg.code); break;
+      case 'state': emit('state', snapshot()); break;
+      default: break;
+    }
+  }
+
+  function closeStory() {
+    pause();
+    emit('close', { time: round2(now()) });
   }
 
   // ---------------------------------------------------------------- wiring
+
+  function initScrubber() {
+    const scrub = $('scrub');
+    const timeAt = (x) => {
+      const box = $('scrubTrack').getBoundingClientRect();
+      return clamp((x - box.left) / Math.max(1, box.width), 0, 1) * state.duration;
+    };
+    scrub.addEventListener('pointerdown', (e) => {
+      if (!state.story || e.button > 0) return;
+      e.preventDefault();
+      scrub.setPointerCapture(e.pointerId);
+      state.scrubT = timeAt(e.clientX);
+      state.scrubbing = true;
+      internalPause();
+      phone.classList.add('is-scrubbing');
+      render(true);
+    });
+    scrub.addEventListener('pointermove', (e) => {
+      if (!state.scrubbing) return;
+      state.scrubT = timeAt(e.clientX);
+      render(true);
+    });
+    const release = () => {
+      if (!state.scrubbing) return;
+      state.scrubbing = false;
+      phone.classList.remove('is-scrubbing');
+      seek(state.scrubT);
+    };
+    scrub.addEventListener('pointerup', release);
+    scrub.addEventListener('pointercancel', release);
+    scrub.addEventListener('lostpointercapture', release);
+    scrub.addEventListener('keydown', (e) => {
+      const step = { ArrowLeft: -5, ArrowRight: 5, PageDown: -30, PageUp: 30 }[e.key];
+      if (step) { e.preventDefault(); e.stopPropagation(); seek(now() + step); }
+      else if (e.key === 'Home') { e.preventDefault(); seek(0); }
+      else if (e.key === 'End') { e.preventDefault(); seek(state.duration); }
+    });
+  }
 
   function initControls() {
     $('closeBtn').innerHTML = ICONS.close;
@@ -1199,55 +1807,61 @@
     $('startBtnIcon').innerHTML = ICONS.play;
     $('endIcon').innerHTML = ICONS.check;
     $('replayIcon').innerHTML = ICONS.replay;
-    syncPlayButton();
+    if (params.get('close') === '0') $('closeBtn').hidden = true;
+    syncPlayState();
 
     $('playBtn').addEventListener('click', togglePlay);
     $('startBtn').addEventListener('click', play);
-    $('replayBtn').addEventListener('click', () => { audio.currentTime = 0; play(); });
-    $('endCloseBtn').addEventListener('click', () => { audio.pause(); audio.currentTime = 0; render(true); showStart(); });
-    $('closeBtn').addEventListener('click', () => { audio.pause(); showEndCard(); });
+    $('replayBtn').addEventListener('click', () => { state.pos = { seg: 0, local: 0 }; play(); });
+    $('endCloseBtn').addEventListener('click', () => {
+      if (EMBED) closeStory();
+      pause();
+      goTo(0, 0);
+      showStart();
+    });
+    $('closeBtn').addEventListener('click', () => {
+      if (EMBED) closeStory();
+      else pause();
+      if (state.story) showEndCard();
+    });
     $('ccBtn').addEventListener('click', () => setCaptions(!state.captionsOn));
     $('langBtn').addEventListener('click', openSheet);
     $('sheetClose').addEventListener('click', closeSheet);
     $('sheetBackdrop').addEventListener('click', closeSheet);
 
-    audio.addEventListener('play', syncPlayButton);
-    audio.addEventListener('pause', syncPlayButton);
-    audio.addEventListener('ended', () => { syncPlayButton(); showEndCard(); });
-
-    // Chapter segments double as the seek bar: the pointer position inside a segment
-    // maps to the same fraction of that chapter.
-    const segments = $('segments');
-    const seekFromEvent = (e) => {
-      const segs = [...segments.children];
-      if (!segs.length) return;
-      let i = segs.findIndex((seg) => e.clientX <= seg.getBoundingClientRect().right);
-      if (i < 0) i = segs.length - 1;
-      const box = segs[i].getBoundingClientRect();
-      const scene = state.scenes[i];
-      seek(scene.start + clamp((e.clientX - box.left) / box.width, 0, 1) * (scene.end - scene.start));
-    };
-    segments.addEventListener('pointerdown', (e) => {
-      if (!state.story) return;
-      segments.setPointerCapture(e.pointerId);
-      seekFromEvent(e);
-      const move = (ev) => seekFromEvent(ev);
-      const up = () => {
-        segments.removeEventListener('pointermove', move);
-        segments.removeEventListener('pointerup', up);
-        segments.removeEventListener('pointercancel', up);
-      };
-      segments.addEventListener('pointermove', move);
-      segments.addEventListener('pointerup', up);
-      segments.addEventListener('pointercancel', up);
+    audio.addEventListener('pause', () => {
+      if (state.expectPause > 0) state.expectPause--;
+      else if (!audio.ended && state.wantPlay) state.wantPlay = false;   // paused by the system (call, headphones)
+      syncPlayState();
     });
+    audio.addEventListener('play', () => {
+      if (state.expectPlay > 0) state.expectPlay--;
+      else if (!state.wantPlay) {   // started by the system (lock screen, headset button)
+        state.wantPlay = true;
+        hideOverlays();
+      }
+      syncPlayState();
+    });
+    audio.addEventListener('playing', syncPlayState);
+    audio.addEventListener('ended', onSegmentEnded);
+    initScrubber();
 
     document.addEventListener('keydown', (e) => {
-      if (e.target.closest('input, textarea, select, .builder') || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.target.closest('input, textarea, select, .builder, .scrub') || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === ' ' || e.key === 'k') { e.preventDefault(); togglePlay(); }
-      else if (e.key === 'ArrowRight') { e.preventDefault(); seek(audio.currentTime + 5); }
-      else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(audio.currentTime - 5); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); seek(now() + 5); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(now() - 5); }
       else if (e.key === 'Escape') closeSheet();
+    });
+
+    window.addEventListener('message', (e) => {
+      if (window.parent === window || e.source !== window.parent) return;
+      if (PARENT_ORIGIN !== '*' && e.origin !== PARENT_ORIGIN) return;
+      let msg = e.data;
+      if (typeof msg === 'string') {
+        try { msg = JSON.parse(msg); } catch (err) { return; }
+      }
+      if (msg && msg.target === 'credit-story-player') command(msg);
     });
 
     $('devForm').addEventListener('submit', (e) => {
@@ -1262,16 +1876,15 @@
     $('devReload').addEventListener('click', () => {
       if (!state.storyUrl) return;
       loadStory($('devUrl').value.trim() || state.storyUrl, {
-        seekTo: audio.currentTime, play: !audio.paused, stayPaused: true, captions: state.captionsOn,
+        seekTo: now(), play: state.wantPlay, stayPaused: true, captions: state.captionsOn,
       });
     });
     let resizeTimer;
     window.addEventListener('resize', () => {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
-        const idx = state.activeIdx;
         unmountActive(false);
-        if (idx >= 0) { mountScene(idx); render(true); }
+        render(true);
       }, 150);
     });
   }
@@ -1279,14 +1892,29 @@
   initControls();
   requestAnimationFrame(tick);
 
-  // Public API for embedding pages (the builder uses it to play freshly generated stories).
+  // Public API for the builder and for host apps (Flutter: controller.runJavaScript('StoryPlayer.pause()')).
   window.StoryPlayer = {
     load: (url, opts) => loadStory(url, opts),
+    play,
+    pause,
+    toggle: togglePlay,
+    seek,
+    setCaptions: (on) => setCaptions(Boolean(on)),
+    setLanguage,
     busy,
     cancelBusy,
     get story() { return state.story; },
+    get state() { return snapshot(); },
   };
 
+  const storyParam = params.get('story');
   const startTime = parseFloat(params.get('t'));
-  loadStory(params.get('story') || CONFIG.storyUrl, Number.isFinite(startTime) ? { seekTo: startTime, stayPaused: true } : {});
+  const autoplay = params.get('autoplay') === '1';
+  emit('ready', { embed: EMBED });
+  if (storyParam || !EMBED) {
+    loadStory(storyParam || CONFIG.storyUrl, Number.isFinite(startTime)
+      ? { seekTo: startTime, stayPaused: !autoplay, play: autoplay }
+      : { play: autoplay });
+  }
+  // Embedded without ?story=: the loader stays up until the host sends a story (load command).
 })();

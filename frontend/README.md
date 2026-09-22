@@ -9,18 +9,21 @@ Either way, the backend writes the narration, synthesizes it in Hindi and/or Eng
 
 ```
 app/crif_report.py        # CRIF High Mark response -> plain facts (no PAN/phones/addresses/account numbers)
-app/crif_story.py         # facts -> 19-chapter script in English + Hindi -> story JSON
+app/crif_story.py         # facts -> 19-chapter script in English + Hindi -> recorded chapter by chapter
 app/story_engine.py       # narration engine (edge-tts + word timings) and the quick-summary story
 app/story_routes.py       # POST /api/story/crif, POST /api/story, serves /stories/<id>/ and /player/
 frontend/
-├── index.html            # builder panel + player
+├── index.html            # builder panel + player (?embed=1: the player alone, for apps)
 ├── builder.js            # CRIF upload tab, quick form, JSON tab; calls the API
-├── player.js             # timeline engine + scene renderers (window.StoryPlayer)
+├── player.js             # timeline engine + scene renderers + app bridge (window.StoryPlayer)
 ├── player.css            # Oct Credit tokens: Manrope, #1677ff accent; black (default) and light themes
 ├── icons.js              # line icons referenced by name from the story JSON
 ├── config.js             # default story + API location
 ├── data/, audio/         # bundled sample story (Karan, 776), shown on first load
 └── tools/generate_story.py  # regenerate the bundled sample from the command line
+integrations/
+├── react/CreditStoryPlayer.jsx          # <iframe> component for React web apps
+└── flutter/credit_story_player.dart     # WebView widget for Flutter apps
 ```
 
 ## Run it
@@ -32,7 +35,9 @@ The backend serves the page, the API and the generated stories:
 # open http://localhost:8000/player/
 ```
 
-On the **CRIF report** tab, drop the CRIF response file (or paste its JSON). A summary card confirms it's the right report. Pick the languages and speed, then press **Generate video**. A detailed walkthrough takes about 15–30 seconds to generate for both languages. The same report again within 24 hours comes back instantly. The address bar gets `?story=…`, so the link reopens that exact video until it expires.
+On the **CRIF report** tab, drop the CRIF response file (or paste its JSON). A summary card confirms it's the right report. Pick the languages and speed, then press **Generate video**. The video starts playing as soon as its first chapter is recorded, usually after 3–8 seconds, and the other chapters record while it plays (the status line under the button counts them). The same report again within 24 hours comes back instantly. The address bar gets `?story=…`, so the link reopens that exact video until it expires.
+
+The seek bar under the video is one continuous line: tap or drag anywhere on it to move forward or back, and a bubble shows the time and chapter while you drag. While a new video is still recording, the lighter part of the bar shows how much is ready and the total time has a `~` because later chapters are estimated. If playback reaches a chapter that isn't recorded yet, it shows "Recording this chapter…" and carries on by itself when it's ready.
 
 ## Detailed walkthrough from a CRIF report
 
@@ -43,7 +48,26 @@ curl -X POST "http://localhost:8000/api/story/crif?languages=hi,en" \
   -H "Content-Type: application/json" --data-binary @WaseemCrifResponse
 ```
 
-Options go in the query string (`languages=hi,en`, `customer_name=Waseem`, `voice_speed=1.05`), or you can wrap the report: `{"report": {…}, "languages": ["en"], "customer_name": "Waseem", "voice_speed": 1.0}`. The response has the same shape as `/api/story` below, plus `summary` and the list of `chapters`. A body that isn't a CRIF report returns HTTP 422.
+Options go in the query string (`languages=hi,en`, `customer_name=Waseem`, `voice_speed=1.05`), or you can wrap the report: `{"report": {…}, "languages": ["en"], "customer_name": "Waseem", "voice_speed": 1.0}`. A body that isn't a CRIF report returns HTTP 422.
+
+**Fast first response.** Each chapter is recorded as its own small audio file. The API answers as soon as chapter 1 of the first language is recorded, usually after 3–8 seconds, and a background job records the rest in playing order (first language first, 8 chapters at a time). The whole two-language video is usually done within a minute, well before a viewer gets to the later chapters. Chapters that were already recorded are reused if the same report is sent again after a failure or a server restart.
+
+```json
+{
+  "story_id": "4bc15b8da6eca2a7",
+  "cached": false,
+  "status": "generating",
+  "chapters_ready": 5,
+  "story_url": "/stories/4bc15b8da6eca2a7/story.hi.json",
+  "player_url": "/player/?embed=1&story=/stories/4bc15b8da6eca2a7/story.hi.json",
+  "expires_at": "2026-09-23T06:22:26+00:00",
+  "languages": [{ "code": "hi", "label": "हिंदी", "story_url": "…/story.hi.json" }, { "code": "en", "label": "English", "story_url": "…/story.en.json" }],
+  "summary": { "source": "crif", "name": "Athi", "score": 722, "…": "…" },
+  "chapters": ["Welcome", "Your score", "…"]
+}
+```
+
+`status` is `generating` while chapters are still recording, and `ready` when the whole video exists (`cached: true` means it was already complete). `story_url` is playable either way, because the player loads new chapters as they appear. `player_url` is the same story in the full-screen embed player (see [Embed it in an app](#embed-it-in-an-app)). If the first chapter can't be recorded, you get HTTP 502, or 504 if the voice service takes more than 90 seconds.
 
 **What the video covers.** Chapters that don't apply are left out; for example, "Overdue now" only appears if something is overdue.
 
@@ -122,7 +146,9 @@ curl -X POST http://localhost:8000/api/story -H "Content-Type: application/json"
 {
   "story_id": "50beaf4fbce6d554",
   "cached": false,
+  "status": "ready",
   "story_url": "/stories/50beaf4fbce6d554/story.en.json",
+  "player_url": "/player/?embed=1&story=/stories/50beaf4fbce6d554/story.en.json",
   "languages": [
     { "code": "en", "label": "English", "story_url": "/stories/50beaf4fbce6d554/story.en.json" },
     { "code": "hi", "label": "हिंदी", "story_url": "/stories/50beaf4fbce6d554/story.hi.json" }
@@ -131,7 +157,63 @@ curl -X POST http://localhost:8000/api/story -H "Content-Type: application/json"
 }
 ```
 
-Open `http://localhost:8000/player/?story=/stories/50beaf4fbce6d554/story.en.json` to play it. Invalid input returns HTTP 422 with one entry per bad field. If the voice service can't be reached, you get HTTP 502. Generated files live in `outputs/stories/<story_id>/`.
+Open `http://localhost:8000/player/?story=/stories/50beaf4fbce6d554/story.en.json` to play it. Invalid input returns HTTP 422 with one entry per bad field. If the voice service can't be reached, you get HTTP 502. Generated files live in `outputs/stories/<story_id>/`. The quick summary is short enough (about 5 seconds) that it is still recorded in one go, so it always comes back `ready`.
+
+## Embed it in an app
+
+The player page runs inside a **Flutter WebView** or a **React `<iframe>`** as a full-screen player without the builder. Your server calls the story API (the CRIF report shouldn't pass through the phone) and hands the app `story_url`. The app then opens:
+
+```
+https://<backend>/player/?embed=1&story=<story_url>
+```
+
+That is `player_url` from the API response, relative to the backend. Inside an iframe, embed mode switches on by itself. In embed mode the player fills the screen and stays clear of notches and the home indicator. It keeps its phone-shaped layout, so a wider view (a tablet, or a landscape iframe) gets a centred portrait player on the same background. It doesn't scroll or bounce.
+
+| Parameter | Effect |
+| --- | --- |
+| `embed=1` | Player only, full screen. Without `story`, it shows the loader until the app sends a story (open the player first, load when your API call returns). |
+| `story=<url>` | Story JSON to play (`story_url` from the API). |
+| `autoplay=1` | Start without a tap. Needs the WebView settings below; browsers may still require a tap in an iframe, in which case the Play screen shows. |
+| `theme=light` | Light theme (default black). |
+| `close=0` | Hide the close button. |
+| `origin=<https://your.app>` | iframe only: post events to this parent origin only, and accept commands only from it. |
+| `bridge=<name>` | Flutter / WebView only: name of the JavaScript channel (default `StoryPlayerBridge`). |
+
+**Ready-made components:** [`integrations/react/CreditStoryPlayer.jsx`](../integrations/react/CreditStoryPlayer.jsx) and [`integrations/flutter/credit_story_player.dart`](../integrations/flutter/credit_story_player.dart). Copy one into your app. Usage is at the top of each file.
+
+```jsx
+<CreditStoryPlayer ref={player} baseUrl="https://backend.example.com" storyUrl={storyUrl}
+  onEvent={(e) => …} onClose={() => setOpen(false)} />        // player.current.pause() / seek(120) / load(url)
+```
+
+```dart
+CreditStoryPlayer(key: player, baseUrl: 'https://backend.example.com', storyUrl: storyUrl,
+  onEvent: (e) => …, onClose: () => Navigator.of(context).pop())   // player.currentState?.pause() / seek(120) / load(url)
+```
+
+**Events** reach the app as `{ "source": "credit-story-player", "type": …, … }`: through `window.parent.postMessage` in an iframe, through the JavaScript channel in Flutter (`webview_flutter` `addJavaScriptChannel('StoryPlayerBridge', …)` or a `flutter_inappwebview` handler of that name), and through `window.ReactNativeWebView.postMessage` in React Native.
+
+| `type` | Details |
+| --- | --- |
+| `ready` | The page is up; commands work from now on. |
+| `loaded` | A story is ready to play: `storyId`, `language`, `status`, `duration`, `estimated`, `chapter`. |
+| `play` / `pause` | Playback started or stopped, with `time`. |
+| `timeupdate` | About once a second while playing, and on every jump: `time`, `duration`, `estimated`. |
+| `chapter` | A new chapter is on screen: `index`, `count`, `id`, `title`. |
+| `generation` | Recording progress of a new video: `status` (`generating` / `ready` / `failed`), `ready`, `total`, `error`. |
+| `language` | The viewer picked another narration language: `code`. |
+| `ended` | The story finished (the end card is showing). |
+| `close` | The viewer tapped close. Dismiss the player. |
+| `error` | Something couldn't load: `message`. |
+| `state` | Reply to the `state` command, with the same fields as `loaded`. |
+
+**Commands:** in Flutter, call `window.StoryPlayer` with `runJavaScript`: `play()`, `pause()`, `toggle()`, `seek(seconds)`, `load(url, { play: true })`, `setLanguage('en')`, `setCaptions(false)`. From a parent page, `postMessage({ target: 'credit-story-player', command, … }, playerOrigin)` with `command` one of `play`, `pause`, `toggle`, `seek` (`time`), `load` (`url`, `autoplay`), `language` (`code`), `captions` (`on`), `state`.
+
+**Platform settings** (already done in the components):
+
+- **Flutter iOS:** `WebKitWebViewControllerCreationParams(allowsInlineMediaPlayback: true, mediaTypesRequiringUserAction: {})`. **Flutter Android:** `AndroidWebViewController.setMediaPlaybackRequiresUserGesture(false)`. Both need JavaScript enabled. For a plain `http://` backend during development, allow cleartext traffic (`android:usesCleartextTraffic="true"`, iOS `NSAppTransportSecurity`).
+- **iframe:** `allow="autoplay; fullscreen"`. The backend already allows any origin (CORS) and sends no `X-Frame-Options`, so any site can frame it.
+- Audio plays through a single `<audio>` element, so the first tap on Play unlocks sound for the whole video, chapter changes included, on iOS and in Android WebViews.
 
 ## Other ways to play a story
 
@@ -139,9 +221,10 @@ Open `http://localhost:8000/player/?story=/stories/50beaf4fbce6d554/story.en.jso
 - **Default story:** `storyUrl` in [`config.js`](config.js). `apiBase` there points at the backend when the page is served from somewhere other than the backend itself.
 - **For one visit:** `?story=<url of a story JSON>`. `?t=42` opens it paused at 42 seconds.
 - **In the page:** the **Story file** tab loads a story JSON by URL. **Reload** re-reads it after edits without losing your place, and the scene list jumps to any chapter.
-- **From other scripts:** `window.StoryPlayer.load(url, { play: true })`.
+- **From other scripts:** `window.StoryPlayer.load(url, { play: true })`, plus the commands listed under [Embed it in an app](#embed-it-in-an-app).
+- **Keys:** <kbd>Space</kbd> play/pause, <kbd>←</kbd>/<kbd>→</kbd> 5 seconds back/forward (also on the focused seek bar, with <kbd>PgUp</kbd>/<kbd>PgDn</kbd> for 30 seconds).
 
-Paths inside a story JSON (`audio.src`, `languages[].src`) resolve **relative to the JSON file**.
+Paths inside a story JSON (`audio.src`, `languages[].src`, `segments[].audio` / `.data`) resolve **relative to the JSON file**.
 
 ## Regenerate the bundled sample
 
@@ -190,10 +273,32 @@ This is what `POST /api/story` produces and the player reads. You normally don't
 
 - `scenes[].start` / `end` and all `captions` times are **seconds on the audio timeline**.
 - `scenes[].beats[].at` is **seconds after the scene's start**. A beat is a moment where something new animates in. Beats that are left out fall back to defaults, and blocks whose beat is missing stay hidden.
-- The scene whose `start` is the latest one `≤` the current time is shown, so scenes should cover the audio back to back. Each scene is one segment of the progress bar at the top.
+- The scene whose `start` is the latest one `≤` the current time is shown, so scenes should cover the audio back to back.
 - `chapter` is the scene's label in the header. `theme` tints the background haze: `blue`, `green`, `amber` or `violet`.
 - `tone` / `status.tone` colours chips and icons: `good`, `warn`, `bad` or `neutral`.
 - In any `title`, wrap words in `*asterisks*` to draw them in the accent blue.
+
+### Segmented stories (the CRIF walkthrough)
+
+`POST /api/story/crif` writes schema `4.0`. Instead of one `audio` file with `scenes` and `captions`, the story is a manifest of **segments**, one per chapter, each with its own MP3 and a small data file. The manifest is rewritten each time a chapter finishes recording. While `status` is `generating`, the player re-reads it every 1.5 seconds.
+
+```jsonc
+{
+  "schema_version": "4.0",
+  "format": "segmented",
+  "status": "generating",                 // "ready" once every segment exists; "failed" (+ "error") if recording stopped
+  "duration": 806.1,                      // recorded durations plus estimates for the rest
+  "segments": [
+    { "id": "welcome", "chapter": "Welcome", "theme": "blue",
+      "ready": true, "duration": 27.64, "audio": "hi/00.mp3", "data": "hi/00.json" },
+    { "id": "score", "chapter": "Your score", "theme": "amber",
+      "ready": false, "estimate": 34.5 }  // not recorded yet: length estimated from the text
+  ],
+  // brand, language, languages, player, intro, end_card: as above
+}
+```
+
+A segment's data file is `{ "duration", "scenes": [ … ], "captions": [ … ] }`, with times in **seconds from the start of that segment's MP3**. The player lines the segments up one after another. The single-file format above still plays as before: it is treated as one segment.
 
 ### Scene types
 

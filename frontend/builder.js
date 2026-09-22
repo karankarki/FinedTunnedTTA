@@ -3,6 +3,8 @@
 (() => {
   'use strict';
 
+  if (document.documentElement.hasAttribute('data-embed')) return;   // embedded: player only
+
   const CONFIG = Object.assign({ apiBase: '' }, window.STORY_PLAYER_CONFIG);
   const $ = (id) => document.getElementById(id);
 
@@ -57,7 +59,7 @@
   ];
   const INPUTS = FIELDS.filter((f) => f.key);
 
-  const state = { dirty: false, busy: false, jsonTimer: 0, mode: 'crif', crif: null };
+  const state = { dirty: false, busy: false, jsonTimer: 0, mode: 'crif', crif: null, readyIn: '' };
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -474,8 +476,8 @@
     };
     const name = $('c_name').value.trim();
     if (name) body.customer_name = name;
-    await runGeneration('/api/story/crif', body, 'Writing the walkthrough and recording the narration…',
-      'Recording 8–12 minutes of narration per language, usually 20–60 seconds.');
+    await runGeneration('/api/story/crif', body, 'Writing the walkthrough and recording chapter 1…',
+      'Recording the first chapter, usually 3–8 seconds. The rest records while it plays.');
   }
 
   // ---------------------------------------------------------------- generate
@@ -548,7 +550,9 @@
       state.dirty = false;
       await window.StoryPlayer.load(storyUrl, { play: true });
       const secs = ((performance.now() - started) / 1000).toFixed(1);
-      $('builderStatus').textContent = body.cached ? `Ready in ${secs}s (same details as before, reused)` : `Generated in ${secs}s`;
+      state.readyIn = body.cached ? `Ready in ${secs}s (same details as before, reused)`
+        : body.status === 'generating' ? `Playing after ${secs}s` : `Generated in ${secs}s`;
+      $('builderStatus').textContent = state.readyIn;
       if (window.matchMedia('(max-width: 1000px)').matches) $('phone').scrollIntoView({ behavior: 'smooth' });
     } catch (err) {
       showError(err.message);
@@ -564,7 +568,10 @@
     btn.disabled = busy;
     btn.classList.toggle('is-busy', busy);
     $('generateLabel').textContent = busy ? 'Generating…' : 'Generate video';
-    if (busy) $('builderStatus').textContent = message || '';
+    if (busy) {
+      state.readyIn = '';
+      $('builderStatus').textContent = message || '';
+    }
   }
 
   // ---------------------------------------------------------------- wiring
@@ -607,6 +614,16 @@
       $('jsonInput').select();
       setJsonStatus('Select-all done, press Cmd/Ctrl+C to copy.', 'warn');
     }
+  });
+
+  // While a new video's later chapters are still recording, show how far along it is.
+  window.addEventListener('story:generation', (e) => {
+    const g = e.detail || {};
+    if (state.busy || !state.readyIn || g.total < 2) return;
+    const progress = g.status === 'generating' ? `recording chapters, ${g.ready} of ${g.total} ready`
+      : g.status === 'failed' ? `${g.ready} of ${g.total} chapters recorded, the rest failed: generate again to finish`
+        : `all ${g.total} chapters ready`;
+    $('builderStatus').textContent = `${state.readyIn} · ${progress}`;
   });
 
   // When a story loads (the bundled sample, a ?story= link or a language switch), show its

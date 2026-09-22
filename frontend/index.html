@@ -10,11 +10,18 @@
   <link rel="stylesheet" href="player.css">
   <script src="config.js"></script>
   <script>
-    // Theme before first paint: ?theme=light|dark wins, then config.js, then dark.
+    // Before first paint:
+    //   theme  ?theme=light|dark wins, then config.js, then dark.
+    //   embed  ?embed=1 (or being inside an iframe, unless ?embed=0) shows only the player,
+    //          full screen, for apps: a Flutter WebView or a React <iframe>.
     (function () {
-      var asked = new URLSearchParams(location.search).get('theme');
-      var mode = asked || (window.STORY_PLAYER_CONFIG || {}).theme || 'dark';
+      var params = new URLSearchParams(location.search);
+      var mode = params.get('theme') || (window.STORY_PLAYER_CONFIG || {}).theme || 'dark';
       document.documentElement.dataset.mode = mode === 'light' ? 'light' : 'dark';
+      var embed = params.get('embed');
+      var framed = false;
+      try { framed = window.self !== window.top; } catch (e) { framed = true; }
+      if (embed === '1' || embed === 'true' || (framed && embed !== '0')) document.documentElement.setAttribute('data-embed', '');
     })();
   </script>
 </head>
@@ -92,7 +99,6 @@
     <div class="bg" aria-hidden="true"><div class="blob blob-a"></div><div class="blob blob-b"></div><div class="dots"></div></div>
 
     <header class="topbar">
-      <div class="segments" id="segments" aria-label="Chapters"></div>
       <div class="topbar-row">
         <span class="brand" id="brand"></span>
         <span class="chapter" id="chapterLabel"></span>
@@ -101,14 +107,27 @@
     </header>
 
     <div class="stage" id="stage"></div>
+    <div class="buffering" id="buffering" hidden><span class="spinner-sm" aria-hidden="true"></span><span id="bufferingText">Loading…</span></div>
     <p class="captions" id="captions" aria-live="off"></p>
 
-    <div class="controls">
-      <button class="play-btn" id="playBtn" aria-label="Play"></button>
-      <span class="time" id="timeLabel">0:00 / 0:00</span>
-      <span class="spacer"></span>
-      <button class="icon-btn" id="ccBtn" aria-label="Toggle captions" aria-pressed="true"></button>
-      <button class="lang-pill" id="langBtn" aria-label="Audio language"><span class="lang-globe" id="langGlobe"></span><span id="langLabel"></span><span class="lang-chev" id="langChev"></span></button>
+    <div class="dock">
+      <!-- One continuous seek bar: drag or tap anywhere to move forward or back. The lighter
+           band is the part already recorded while a new video is still being generated. -->
+      <div class="scrub" id="scrub" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+        <div class="scrub-track" id="scrubTrack">
+          <div class="scrub-ready" id="scrubReady"></div>
+          <div class="scrub-fill" id="scrubFill"></div>
+          <div class="scrub-thumb" id="scrubThumb"></div>
+          <div class="scrub-tip" id="scrubTip" hidden><b id="scrubTipTime"></b><span id="scrubTipChapter"></span></div>
+        </div>
+      </div>
+      <div class="controls">
+        <button class="play-btn" id="playBtn" aria-label="Play"></button>
+        <span class="time" id="timeLabel">0:00 / 0:00</span>
+        <span class="spacer"></span>
+        <button class="icon-btn" id="ccBtn" aria-label="Toggle captions" aria-pressed="true"></button>
+        <button class="lang-pill" id="langBtn" aria-label="Audio language"><span class="lang-globe" id="langGlobe"></span><span id="langLabel"></span><span class="lang-chev" id="langChev"></span></button>
+      </div>
     </div>
 
     <section class="overlay loader" id="loader">
@@ -159,7 +178,7 @@
     </section>
   </main>
 
-  <audio id="audio" preload="auto"></audio>
+  <audio id="audio" preload="auto" playsinline></audio>
 
   <script src="icons.js"></script>
   <script src="player.js"></script>

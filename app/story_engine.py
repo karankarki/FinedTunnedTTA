@@ -201,6 +201,16 @@ def _decode_mp3(data):
     return samples
 
 
+async def encode_mp3(samples: np.ndarray, audio_path: Path, bitrate: str):
+    """Encode mono SAMPLE_RATE float samples to an MP3 file (raw PCM is piped straight into ffmpeg)."""
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(
+        subprocess.run,
+        ["ffmpeg", "-y", "-v", "error", "-f", "f32le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "pipe:0",
+         "-codec:a", "libmp3lame", "-b:a", bitrate, str(audio_path)],
+        input=samples.astype(np.float32).tobytes(), check=True)
+
+
 def score_band(score):
     return next(b for b in SCORE_BANDS if b["from"] <= score <= b["to"])
 
@@ -474,12 +484,7 @@ async def build_story(inp: StoryInput, lang: str, audio_path: Path, audio_src: s
         cursor += gap
     audio = np.concatenate(pieces)
     duration = round(len(audio) / SAMPLE_RATE, 3)
-
-    audio_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(suffix=".wav") as wav:
-        sf.write(wav.name, audio, SAMPLE_RATE)
-        await asyncio.to_thread(subprocess.run, ["ffmpeg", "-y", "-v", "error", "-i", wav.name, "-codec:a",
-                                                 "libmp3lame", "-b:a", "96k", str(audio_path)], check=True)
+    await encode_mp3(audio, audio_path, "96k")
 
     score = inp.score
     pct, on_time_status, util_status, enq_status = factor_results(inp)
@@ -551,8 +556,15 @@ async def generate_stories(inp: StoryInput, json_path: Callable[[str], Path],
 # chapters of sentences, each sentence available in every language and optionally carrying
 # beats. Sentence boundaries are known by construction, so numbers like "1.99" never split
 # a sentence the way a regex would.
+#
+# Every chapter is recorded into its own MP3 (a "segment"), so a player can start on the first
+# chapter while the rest are still being recorded. The 0.7s pause between chapters is split
+# into silence at the end of one segment and the start of the next, so the scene changes a
+# moment before the voice starts, as in the single-file stories.
 
-CHAPTER_GAP = 0.7
+CHAPTER_LEAD = 0.3   # silence at the start of every chapter but the first (which gets LEAD_IN)
+CHAPTER_TAIL = 0.4   # silence at the end of every chapter but the last (which gets TAIL)
+CHAPTER_ATTEMPT_TIMEOUT = 25  # a chapter normally records in 3-8s; a stalled request is retried instead of waited out
 
 
 def _sentence_times(text, spans, words, offset, length):
@@ -577,71 +589,56 @@ def _sentence_times(text, spans, words, offset, length):
     return out
 
 
-async def narrate_chapters(chapters: List[dict], lang: str, voice: str, speed: float, audio_path: Path,
-                           slots: asyncio.Semaphore):
-    """Synthesize every chapter's sentences in `lang` into one MP3; return (duration, per-chapter sentence timings)."""
-    texts, spans = [], []
-    for ch in chapters:
-        text, sp = "", []
-        for i, sentence in enumerate(ch["sentences"]):
-            part = sentence[lang].strip()
-            if i:
-                text += " "
-            sp.append((len(text), len(text) + len(part)))
-            text += part
-        texts.append(text)
-        spans.append(sp)
+def chapter_text(chapter: dict, lang: str):
+    """The chapter's narration in `lang` as one string, plus each sentence's (start, end) in it."""
+    text, spans = "", []
+    for i, sentence in enumerate(chapter["sentences"]):
+        part = sentence[lang].strip()
+        if i:
+            text += " "
+        spans.append((len(text), len(text) + len(part)))
+        text += part
+    return text, spans
 
+
+async def narrate_chapter(chapter: dict, lang: str, voice: str, speed: float, audio_path: Path,
+                          lead: float, tail: float):
+    """Record one chapter in `lang` to its own MP3: `lead` seconds of silence, the voice, `tail` seconds.
+
+    Returns (duration, sentence timings), with times in seconds from the start of this MP3.
+    """
+    text, spans = chapter_text(chapter, lang)
     rate = edge_engine.speed_to_rate_str(speed)
-
-    async def synth(text):
-        async with slots:
-            for attempt in range(3):
-                try:
-                    return await _synthesize(text, voice, rate)
-                except Exception:
-                    if attempt == 2:
-                        raise
-                    await asyncio.sleep(1.5 * (attempt + 1))
-
-    results = await asyncio.gather(*(synth(t) for t in texts))
-    pieces, timings, cursor = [np.zeros(int(LEAD_IN * SAMPLE_RATE), np.float32)], [], LEAD_IN
-    for i, (text, sp, (mp3, words)) in enumerate(zip(texts, spans, results)):
-        samples = _decode_mp3(mp3)
-        length = len(samples) / SAMPLE_RATE
-        timings.append(_sentence_times(text, sp, words, cursor, length))
-        pieces.append(samples)
-        cursor += length
-        gap = CHAPTER_GAP if i < len(texts) - 1 else TAIL
-        pieces.append(np.zeros(int(gap * SAMPLE_RATE), np.float32))
-        cursor += gap
-    audio = np.concatenate(pieces)
-    duration = round(len(audio) / SAMPLE_RATE, 3)
-    audio_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(suffix=".wav") as wav:
-        sf.write(wav.name, audio, SAMPLE_RATE)
-        await asyncio.to_thread(subprocess.run, ["ffmpeg", "-y", "-v", "error", "-i", wav.name, "-codec:a",
-                                                 "libmp3lame", "-b:a", "80k", str(audio_path)], check=True)
-    return duration, timings
+    for attempt in range(3):
+        try:
+            mp3, words = await asyncio.wait_for(_synthesize(text, voice, rate), CHAPTER_ATTEMPT_TIMEOUT)
+            break
+        except Exception:
+            if attempt == 2:
+                raise
+            await asyncio.sleep(1.5 * (attempt + 1))
+    samples = await asyncio.to_thread(_decode_mp3, mp3)
+    length = len(samples) / SAMPLE_RATE
+    timings = _sentence_times(text, spans, words, lead, length)
+    audio = np.concatenate([np.zeros(int(lead * SAMPLE_RATE), np.float32), samples,
+                            np.zeros(int(tail * SAMPLE_RATE), np.float32)])
+    await encode_mp3(audio, audio_path, "80k")
+    return round(len(audio) / SAMPLE_RATE, 3), timings
 
 
-def assemble_scenes(chapters: List[dict], timings: List[List[dict]], duration: float) -> List[dict]:
-    """One scene per chapter; each sentence's beats fire when that sentence starts being spoken."""
-    starts = [0.0] + [max(0.0, tm[0]["start"] - LEAD) for tm in timings[1:]]
-    ends = starts[1:] + [duration]
-    scenes = []
-    for ch, tm, st, en in zip(chapters, timings, starts, ends):
-        beats = [{"at": 0, "action": "intro"}]
-        for sentence, t in zip(ch["sentences"], tm):
-            base = max(0.0, t["start"] - LEAD - st)
-            for k, b in enumerate(sentence.get("beats") or []):
-                beat = {**b, "at": round(base + k * 0.14, 2)}
-                if beat.get("duration") == "sentence":
-                    beat["duration"] = round(min(3.5, max(1.2, t["end"] - t["start"])), 2)
-                beats.append(beat)
-        scenes.append({"id": ch["id"], "type": ch["type"], "chapter": ch["chapter"], "theme": ch.get("theme", "blue"),
-                       "start": round(st, 2), "end": round(en, 2), "props": ch["props"], "beats": beats})
-    return scenes
+def chapter_scene(chapter: dict, timings: List[dict], duration: float) -> dict:
+    """The chapter's scene on its own clock (0 = start of its MP3); each sentence's beats fire as it starts."""
+    beats = [{"at": 0, "action": "intro"}]
+    for sentence, t in zip(chapter["sentences"], timings):
+        base = max(0.0, t["start"] - LEAD)
+        for k, b in enumerate(sentence.get("beats") or []):
+            beat = {**b, "at": round(base + k * 0.14, 2)}
+            if beat.get("duration") == "sentence":
+                beat["duration"] = round(min(3.5, max(1.2, t["end"] - t["start"])), 2)
+            beats.append(beat)
+    return {"id": chapter["id"], "type": chapter["type"], "chapter": chapter["chapter"],
+            "theme": chapter.get("theme", "blue"), "start": 0, "end": round(duration, 2),
+            "props": chapter["props"], "beats": beats}
 
 
 def captions_from(timings: List[List[dict]]) -> List[dict]:
