@@ -1,0 +1,1197 @@
+{
+  "schema_version": "2.1",
+  "story_id": "e9f1460c1788f0bd",
+  "title": "Credit score story · Karan · September 2026",
+  "language": "en",
+  "languages": [
+    {
+      "code": "hi",
+      "label": "हिंदी",
+      "src": "story.hi.json"
+    },
+    {
+      "code": "en",
+      "label": "English",
+      "src": "story.en.json"
+    }
+  ],
+  "generated_at": "2026-09-21T07:00:18+00:00",
+  "brand": {
+    "name": "Oct Credit"
+  },
+  "audio": {
+    "src": "../audio/credit_story_en.mp3",
+    "duration": 70.462,
+    "voice": "en-IN-NeerjaExpressiveNeural",
+    "speed": 0.92,
+    "engine": "edge-neural"
+  },
+  "player": {
+    "captions": true
+  },
+  "input": {
+    "customer_name": "Karan",
+    "customer_name_hi": "करण",
+    "credit_score": 776,
+    "score_bureau": "CIBIL",
+    "report_month": "2026-09",
+    "on_time_repayment_pct": 100.0,
+    "missed_payments_count": 0,
+    "active_credit_cards": 0,
+    "credit_utilization_pct": 0.0,
+    "recent_inquiries": 0,
+    "languages": [
+      "hi",
+      "en"
+    ],
+    "voice_speed": 0.92
+  },
+  "intro": {
+    "title": "Hi Karan, your *September* credit story is ready",
+    "subtitle": "A short walk through your score, what shapes it and how to grow it.",
+    "badges": [
+      {
+        "icon": "shield",
+        "text": "100% Secure & Private"
+      },
+      {
+        "icon": "check",
+        "text": "No impact on your score"
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "id": "score",
+      "type": "score_dial",
+      "chapter": "Your score",
+      "stage_id": "stage_1_score_overview",
+      "start": 0.0,
+      "end": 22.39,
+      "theme": "green",
+      "props": {
+        "eyebrow": "CIBIL score · September 2026",
+        "title": "Hi Karan, here's your *credit score*",
+        "score": 776,
+        "count_from": 300,
+        "min": 300,
+        "max": 900,
+        "bands": [
+          {
+            "from": 300,
+            "to": 549,
+            "label": "Poor",
+            "color": "#f04438"
+          },
+          {
+            "from": 550,
+            "to": 649,
+            "label": "Needs work",
+            "color": "#fb6514"
+          },
+          {
+            "from": 650,
+            "to": 724,
+            "label": "Fair",
+            "color": "#fdb022"
+          },
+          {
+            "from": 725,
+            "to": 774,
+            "label": "Good",
+            "color": "#66c61c"
+          },
+          {
+            "from": 775,
+            "to": 900,
+            "label": "Excellent",
+            "color": "#12b76a"
+          }
+        ],
+        "status": {
+          "text": "Excellent",
+          "tone": "good"
+        },
+        "percentile": {
+          "value": 80,
+          "text": "Better than *80%* of active credit users in India"
+        },
+        "lenders": {
+          "title": "How lenders see you",
+          "items": [
+            {
+              "icon": "shield",
+              "label": "Risk profile",
+              "value": "Low"
+            },
+            {
+              "icon": "bolt",
+              "label": "Approvals",
+              "value": "Faster"
+            },
+            {
+              "icon": "trend",
+              "label": "Loan offers",
+              "value": "Best rates"
+            }
+          ]
+        }
+      },
+      "beats": [
+        {
+          "at": 0,
+          "action": "intro"
+        },
+        {
+          "at": 2.6,
+          "action": "reveal",
+          "duration": 2.96
+        },
+        {
+          "at": 6.58,
+          "action": "percentile"
+        },
+        {
+          "at": 15.3,
+          "action": "lenders"
+        }
+      ]
+    },
+    {
+      "id": "factors",
+      "type": "factor_overview",
+      "chapter": "Score factors",
+      "stage_id": "stage_2_lender_outlook",
+      "start": 22.39,
+      "end": 26.62,
+      "theme": "blue",
+      "props": {
+        "eyebrow": "Score factors",
+        "title": "What shapes *your score*",
+        "subtitle": "Three signals lenders read in your report",
+        "items": [
+          {
+            "icon": "calendar",
+            "name": "Payment history",
+            "impact": "High impact",
+            "result": "100%",
+            "tone": "good"
+          },
+          {
+            "icon": "card",
+            "name": "Credit utilisation",
+            "impact": "High impact",
+            "result": "No cards",
+            "tone": "neutral"
+          },
+          {
+            "icon": "search",
+            "name": "Credit enquiries",
+            "impact": "Medium impact",
+            "result": "0",
+            "tone": "good"
+          }
+        ],
+        "note": "Checking your own score is a soft check. It never lowers your score."
+      },
+      "beats": [
+        {
+          "at": 0.3,
+          "action": "item",
+          "index": 0
+        },
+        {
+          "at": 1.36,
+          "action": "item",
+          "index": 1
+        },
+        {
+          "at": 2.42,
+          "action": "item",
+          "index": 2
+        }
+      ]
+    },
+    {
+      "id": "payment_history",
+      "type": "factor_insight",
+      "chapter": "Payment history",
+      "stage_id": "stage_3_payment_history",
+      "start": 26.62,
+      "end": 40.36,
+      "theme": "green",
+      "props": {
+        "eyebrow": "Factor 1 of 3",
+        "impact": "High impact",
+        "title": "Payment *history*",
+        "explainer": "Paying EMIs and card bills on time is the strongest signal of trust for lenders.",
+        "metric": {
+          "visual": "ring",
+          "value": "100%",
+          "progress": 1.0,
+          "label": "On-time payments",
+          "sublabel": "Last 36 months",
+          "status": {
+            "text": "Excellent",
+            "tone": "good"
+          }
+        },
+        "detail": {
+          "type": "months",
+          "title": "Last 6 months",
+          "months": [
+            {
+              "label": "Mar",
+              "state": "ok"
+            },
+            {
+              "label": "Apr",
+              "state": "ok"
+            },
+            {
+              "label": "May",
+              "state": "ok"
+            },
+            {
+              "label": "Jun",
+              "state": "ok"
+            },
+            {
+              "label": "Jul",
+              "state": "ok"
+            },
+            {
+              "label": "Aug",
+              "state": "ok"
+            }
+          ],
+          "summary": "No missed payments"
+        }
+      },
+      "beats": [
+        {
+          "at": 0,
+          "action": "intro"
+        },
+        {
+          "at": 3.09,
+          "action": "value"
+        },
+        {
+          "at": 8.8,
+          "action": "detail"
+        }
+      ]
+    },
+    {
+      "id": "utilisation",
+      "type": "factor_insight",
+      "chapter": "Credit utilisation",
+      "stage_id": "stage_4_credit_cards",
+      "start": 40.36,
+      "end": 49.69,
+      "theme": "violet",
+      "props": {
+        "eyebrow": "Factor 2 of 3",
+        "impact": "High impact",
+        "title": "Credit *utilisation*",
+        "explainer": "How much of your card limit you use. Staying under 30% shows you borrow responsibly.",
+        "metric": {
+          "visual": "count",
+          "value": "0",
+          "label": "Active credit cards",
+          "sublabel": "As of September 2026",
+          "status": {
+            "text": "No history",
+            "tone": "neutral"
+          }
+        },
+        "detail": {
+          "type": "meter",
+          "title": "Card utilisation",
+          "value": null,
+          "ideal_max": 30,
+          "summary": "Not available, you have no active credit cards"
+        },
+        "tip": {
+          "icon": "bulb",
+          "title": "Add a starter credit card",
+          "text": "Using a card lightly and paying in full builds your credit history."
+        }
+      },
+      "beats": [
+        {
+          "at": 0,
+          "action": "intro"
+        },
+        {
+          "at": 0.0,
+          "action": "value"
+        },
+        {
+          "at": 3.92,
+          "action": "detail"
+        }
+      ]
+    },
+    {
+      "id": "enquiries",
+      "type": "factor_insight",
+      "chapter": "Credit enquiries",
+      "stage_id": "stage_5_credit_inquiries",
+      "start": 49.69,
+      "end": 59.95,
+      "theme": "green",
+      "props": {
+        "eyebrow": "Factor 3 of 3",
+        "impact": "Medium impact",
+        "title": "Credit *enquiries*",
+        "explainer": "Every loan or card application triggers a hard check. Many in a short time worry lenders.",
+        "metric": {
+          "visual": "count",
+          "value": "0",
+          "label": "New applications",
+          "sublabel": "Last 6 months",
+          "status": {
+            "text": "Excellent",
+            "tone": "good"
+          }
+        },
+        "detail": {
+          "type": "slots",
+          "title": "Against the healthy limit",
+          "value": 0,
+          "limit": 3,
+          "summary": "Recommended: 3 or fewer applications per quarter"
+        }
+      },
+      "beats": [
+        {
+          "at": 0,
+          "action": "intro"
+        },
+        {
+          "at": 0.0,
+          "action": "value"
+        },
+        {
+          "at": 4.24,
+          "action": "detail"
+        }
+      ]
+    },
+    {
+      "id": "action_plan",
+      "type": "action_plan",
+      "chapter": "Action plan",
+      "stage_id": "stage_6_increase_credit_score",
+      "start": 59.95,
+      "end": 70.46,
+      "theme": "blue",
+      "props": {
+        "eyebrow": "Action plan",
+        "title": "Your path to *800+*",
+        "current": 776,
+        "target": 800,
+        "target_label": "800+",
+        "range": [
+          700,
+          850
+        ],
+        "gap_label": "24 points to go",
+        "steps": [
+          {
+            "icon": "card",
+            "title": "Get an FD-backed secured card",
+            "text": "Approval is easy because your deposit backs the limit."
+          },
+          {
+            "icon": "wallet",
+            "title": "Use it for small monthly spends",
+            "text": "Keep usage under 30% of the card limit."
+          },
+          {
+            "icon": "calendar",
+            "title": "Pay the full bill on time",
+            "text": "Every on-time payment adds to your credit history."
+          }
+        ],
+        "note": "Bureaus refresh your score every month as lenders report your activity."
+      },
+      "beats": [
+        {
+          "at": 0,
+          "action": "reveal",
+          "duration": 1.6
+        },
+        {
+          "at": 1.93,
+          "action": "step",
+          "index": 0
+        },
+        {
+          "at": 4.92,
+          "action": "step",
+          "index": 1
+        },
+        {
+          "at": 7.05,
+          "action": "step",
+          "index": 2
+        }
+      ]
+    }
+  ],
+  "end_card": {
+    "title": "That's your *September* story",
+    "text": "Your next update will be ready in 1 day",
+    "recap": [
+      {
+        "label": "Credit score",
+        "value": "776 · Excellent",
+        "tone": "good"
+      },
+      {
+        "label": "Payment history",
+        "value": "100% on time",
+        "tone": "good"
+      },
+      {
+        "label": "Credit utilisation",
+        "value": "No active cards",
+        "tone": "neutral"
+      },
+      {
+        "label": "Enquiries",
+        "value": "0 in 6 months",
+        "tone": "good"
+      }
+    ],
+    "primary_label": "Replay story",
+    "secondary_label": "Close",
+    "disclaimer": "This video is for educational purposes only and should not be construed as financial advice."
+  },
+  "captions": [
+    {
+      "start": 0.704,
+      "end": 1.737,
+      "text": "Hello Karan!",
+      "words": [
+        {
+          "start": 0.704,
+          "end": 1.085,
+          "text": "Hello"
+        },
+        {
+          "start": 1.098,
+          "end": 1.737,
+          "text": "Karan"
+        }
+      ]
+    },
+    {
+      "start": 2.747,
+      "end": 5.709,
+      "text": "Your credit score is 776.",
+      "words": [
+        {
+          "start": 2.747,
+          "end": 2.937,
+          "text": "Your"
+        },
+        {
+          "start": 2.951,
+          "end": 3.358,
+          "text": "credit"
+        },
+        {
+          "start": 3.372,
+          "end": 3.779,
+          "text": "score"
+        },
+        {
+          "start": 3.793,
+          "end": 3.915,
+          "text": "is"
+        },
+        {
+          "start": 3.929,
+          "end": 5.709,
+          "text": "776"
+        }
+      ]
+    },
+    {
+      "start": 6.728,
+      "end": 13.997,
+      "text": "That’s a really strong score, placing you in a better position than 80 percent of active Indian users.",
+      "words": [
+        {
+          "start": 6.728,
+          "end": 7.135,
+          "text": "That’s"
+        },
+        {
+          "start": 7.149,
+          "end": 7.203,
+          "text": "a"
+        },
+        {
+          "start": 7.217,
+          "end": 7.706,
+          "text": "really"
+        },
+        {
+          "start": 7.72,
+          "end": 8.168,
+          "text": "strong"
+        },
+        {
+          "start": 8.182,
+          "end": 8.671,
+          "text": "score"
+        },
+        {
+          "start": 9.01,
+          "end": 9.486,
+          "text": "placing"
+        },
+        {
+          "start": 9.499,
+          "end": 9.771,
+          "text": "you"
+        },
+        {
+          "start": 9.785,
+          "end": 9.893,
+          "text": "in"
+        },
+        {
+          "start": 9.907,
+          "end": 9.989,
+          "text": "a"
+        },
+        {
+          "start": 10.002,
+          "end": 10.396,
+          "text": "better"
+        },
+        {
+          "start": 10.41,
+          "end": 10.994,
+          "text": "position"
+        },
+        {
+          "start": 11.008,
+          "end": 11.361,
+          "text": "than"
+        },
+        {
+          "start": 11.374,
+          "end": 11.728,
+          "text": "80"
+        },
+        {
+          "start": 11.741,
+          "end": 12.217,
+          "text": "percent"
+        },
+        {
+          "start": 12.23,
+          "end": 12.434,
+          "text": "of"
+        },
+        {
+          "start": 12.448,
+          "end": 12.978,
+          "text": "active"
+        },
+        {
+          "start": 12.991,
+          "end": 13.358,
+          "text": "Indian"
+        },
+        {
+          "start": 13.372,
+          "end": 13.997,
+          "text": "users"
+        }
+      ]
+    },
+    {
+      "start": 15.454,
+      "end": 21.555,
+      "text": "Lenders consider you a trusted customer, which means easier loan approvals and better offers.",
+      "words": [
+        {
+          "start": 15.454,
+          "end": 16.052,
+          "text": "Lenders"
+        },
+        {
+          "start": 16.066,
+          "end": 16.596,
+          "text": "consider"
+        },
+        {
+          "start": 16.609,
+          "end": 16.745,
+          "text": "you"
+        },
+        {
+          "start": 16.759,
+          "end": 16.827,
+          "text": "a"
+        },
+        {
+          "start": 16.84,
+          "end": 17.356,
+          "text": "trusted"
+        },
+        {
+          "start": 17.37,
+          "end": 18.049,
+          "text": "customer"
+        },
+        {
+          "start": 18.321,
+          "end": 18.539,
+          "text": "which"
+        },
+        {
+          "start": 18.552,
+          "end": 18.987,
+          "text": "means"
+        },
+        {
+          "start": 19.001,
+          "end": 19.395,
+          "text": "easier"
+        },
+        {
+          "start": 19.408,
+          "end": 19.707,
+          "text": "loan"
+        },
+        {
+          "start": 19.721,
+          "end": 20.332,
+          "text": "approvals"
+        },
+        {
+          "start": 20.346,
+          "end": 20.536,
+          "text": "and"
+        },
+        {
+          "start": 20.549,
+          "end": 20.943,
+          "text": "better"
+        },
+        {
+          "start": 20.957,
+          "end": 21.555,
+          "text": "offers"
+        }
+      ]
+    },
+    {
+      "start": 22.538,
+      "end": 25.364,
+      "text": "Let’s see how you can boost your score even higher.",
+      "words": [
+        {
+          "start": 22.538,
+          "end": 22.85,
+          "text": "Let’s"
+        },
+        {
+          "start": 22.864,
+          "end": 23.108,
+          "text": "see"
+        },
+        {
+          "start": 23.122,
+          "end": 23.312,
+          "text": "how"
+        },
+        {
+          "start": 23.326,
+          "end": 23.461,
+          "text": "you"
+        },
+        {
+          "start": 23.475,
+          "end": 23.679,
+          "text": "can"
+        },
+        {
+          "start": 23.692,
+          "end": 24.073,
+          "text": "boost"
+        },
+        {
+          "start": 24.086,
+          "end": 24.236,
+          "text": "your"
+        },
+        {
+          "start": 24.249,
+          "end": 24.63,
+          "text": "score"
+        },
+        {
+          "start": 24.643,
+          "end": 24.888,
+          "text": "even"
+        },
+        {
+          "start": 24.902,
+          "end": 25.364,
+          "text": "higher"
+        }
+      ]
+    },
+    {
+      "start": 26.772,
+      "end": 28.838,
+      "text": "First, on-time payments.",
+      "words": [
+        {
+          "start": 26.772,
+          "end": 27.37,
+          "text": "First"
+        },
+        {
+          "start": 27.52,
+          "end": 28.117,
+          "text": "on-time"
+        },
+        {
+          "start": 28.131,
+          "end": 28.838,
+          "text": "payments"
+        }
+      ]
+    },
+    {
+      "start": 29.861,
+      "end": 34.576,
+      "text": "You have made 100 percent of repayments on time—that’s amazing!",
+      "words": [
+        {
+          "start": 29.861,
+          "end": 30.051,
+          "text": "You"
+        },
+        {
+          "start": 30.065,
+          "end": 30.309,
+          "text": "have"
+        },
+        {
+          "start": 30.323,
+          "end": 30.581,
+          "text": "made"
+        },
+        {
+          "start": 30.595,
+          "end": 31.301,
+          "text": "100"
+        },
+        {
+          "start": 31.315,
+          "end": 31.777,
+          "text": "percent"
+        },
+        {
+          "start": 31.79,
+          "end": 31.94,
+          "text": "of"
+        },
+        {
+          "start": 31.953,
+          "end": 32.605,
+          "text": "repayments"
+        },
+        {
+          "start": 32.619,
+          "end": 32.809,
+          "text": "on"
+        },
+        {
+          "start": 32.823,
+          "end": 33.312,
+          "text": "time"
+        },
+        {
+          "start": 33.475,
+          "end": 33.828,
+          "text": "that’s"
+        },
+        {
+          "start": 33.842,
+          "end": 34.576,
+          "text": "amazing"
+        }
+      ]
+    },
+    {
+      "start": 35.567,
+      "end": 39.059,
+      "text": "This shows lenders that you are responsible with credit.",
+      "words": [
+        {
+          "start": 35.567,
+          "end": 35.812,
+          "text": "This"
+        },
+        {
+          "start": 35.826,
+          "end": 36.233,
+          "text": "shows"
+        },
+        {
+          "start": 36.247,
+          "end": 36.926,
+          "text": "lenders"
+        },
+        {
+          "start": 36.94,
+          "end": 37.144,
+          "text": "that"
+        },
+        {
+          "start": 37.157,
+          "end": 37.266,
+          "text": "you"
+        },
+        {
+          "start": 37.279,
+          "end": 37.415,
+          "text": "are"
+        },
+        {
+          "start": 37.429,
+          "end": 38.271,
+          "text": "responsible"
+        },
+        {
+          "start": 38.285,
+          "end": 38.475,
+          "text": "with"
+        },
+        {
+          "start": 38.489,
+          "end": 39.059,
+          "text": "credit"
+        }
+      ]
+    },
+    {
+      "start": 40.514,
+      "end": 43.381,
+      "text": "You currently have no active credit cards.",
+      "words": [
+        {
+          "start": 40.514,
+          "end": 40.65,
+          "text": "You"
+        },
+        {
+          "start": 40.664,
+          "end": 41.33,
+          "text": "currently"
+        },
+        {
+          "start": 41.343,
+          "end": 41.615,
+          "text": "have"
+        },
+        {
+          "start": 41.628,
+          "end": 41.9,
+          "text": "no"
+        },
+        {
+          "start": 41.914,
+          "end": 42.416,
+          "text": "active"
+        },
+        {
+          "start": 42.43,
+          "end": 42.838,
+          "text": "credit"
+        },
+        {
+          "start": 42.851,
+          "end": 43.381,
+          "text": "cards"
+        }
+      ]
+    },
+    {
+      "start": 44.432,
+      "end": 48.413,
+      "text": "Adding a starter card will establish your revolving credit record.",
+      "words": [
+        {
+          "start": 44.432,
+          "end": 44.839,
+          "text": "Adding"
+        },
+        {
+          "start": 44.853,
+          "end": 44.921,
+          "text": "a"
+        },
+        {
+          "start": 44.934,
+          "end": 45.424,
+          "text": "starter"
+        },
+        {
+          "start": 45.437,
+          "end": 45.736,
+          "text": "card"
+        },
+        {
+          "start": 45.75,
+          "end": 45.926,
+          "text": "will"
+        },
+        {
+          "start": 45.94,
+          "end": 46.619,
+          "text": "establish"
+        },
+        {
+          "start": 46.633,
+          "end": 46.796,
+          "text": "your"
+        },
+        {
+          "start": 46.809,
+          "end": 47.421,
+          "text": "revolving"
+        },
+        {
+          "start": 47.434,
+          "end": 47.896,
+          "text": "credit"
+        },
+        {
+          "start": 47.91,
+          "end": 48.413,
+          "text": "record"
+        }
+      ]
+    },
+    {
+      "start": 49.84,
+      "end": 53.033,
+      "text": "You have made minimal recent credit applications.",
+      "words": [
+        {
+          "start": 49.84,
+          "end": 50.071,
+          "text": "You"
+        },
+        {
+          "start": 50.085,
+          "end": 50.302,
+          "text": "have"
+        },
+        {
+          "start": 50.316,
+          "end": 50.628,
+          "text": "made"
+        },
+        {
+          "start": 50.642,
+          "end": 51.077,
+          "text": "minimal"
+        },
+        {
+          "start": 51.09,
+          "end": 51.566,
+          "text": "recent"
+        },
+        {
+          "start": 51.579,
+          "end": 52.041,
+          "text": "credit"
+        },
+        {
+          "start": 52.055,
+          "end": 53.033,
+          "text": "applications"
+        }
+      ]
+    },
+    {
+      "start": 54.084,
+      "end": 58.649,
+      "text": "Keeping hard loan inquiries low protects your score from sudden drops.",
+      "words": [
+        {
+          "start": 54.084,
+          "end": 54.505,
+          "text": "Keeping"
+        },
+        {
+          "start": 54.519,
+          "end": 54.858,
+          "text": "hard"
+        },
+        {
+          "start": 54.872,
+          "end": 55.198,
+          "text": "loan"
+        },
+        {
+          "start": 55.212,
+          "end": 55.918,
+          "text": "inquiries"
+        },
+        {
+          "start": 55.932,
+          "end": 56.163,
+          "text": "low"
+        },
+        {
+          "start": 56.176,
+          "end": 56.747,
+          "text": "protects"
+        },
+        {
+          "start": 56.76,
+          "end": 56.937,
+          "text": "your"
+        },
+        {
+          "start": 56.951,
+          "end": 57.358,
+          "text": "score"
+        },
+        {
+          "start": 57.372,
+          "end": 57.63,
+          "text": "from"
+        },
+        {
+          "start": 57.644,
+          "end": 58.065,
+          "text": "sudden"
+        },
+        {
+          "start": 58.078,
+          "end": 58.649,
+          "text": "drops"
+        }
+      ]
+    },
+    {
+      "start": 60.102,
+      "end": 68.241,
+      "text": "To increase your credit score, open a fixed-deposit secured credit card, make small routine purchases, and pay in full.",
+      "words": [
+        {
+          "start": 60.102,
+          "end": 60.211,
+          "text": "To"
+        },
+        {
+          "start": 60.225,
+          "end": 60.741,
+          "text": "increase"
+        },
+        {
+          "start": 60.755,
+          "end": 60.904,
+          "text": "your"
+        },
+        {
+          "start": 60.918,
+          "end": 61.312,
+          "text": "credit"
+        },
+        {
+          "start": 61.325,
+          "end": 61.774,
+          "text": "score"
+        },
+        {
+          "start": 62.032,
+          "end": 62.344,
+          "text": "open"
+        },
+        {
+          "start": 62.358,
+          "end": 62.439,
+          "text": "a"
+        },
+        {
+          "start": 62.453,
+          "end": 63.418,
+          "text": "fixed-deposit"
+        },
+        {
+          "start": 63.431,
+          "end": 63.934,
+          "text": "secured"
+        },
+        {
+          "start": 63.947,
+          "end": 64.341,
+          "text": "credit"
+        },
+        {
+          "start": 64.355,
+          "end": 64.776,
+          "text": "card"
+        },
+        {
+          "start": 65.021,
+          "end": 65.252,
+          "text": "make"
+        },
+        {
+          "start": 65.265,
+          "end": 65.727,
+          "text": "small"
+        },
+        {
+          "start": 65.741,
+          "end": 66.176,
+          "text": "routine"
+        },
+        {
+          "start": 66.189,
+          "end": 66.964,
+          "text": "purchases"
+        },
+        {
+          "start": 67.154,
+          "end": 67.399,
+          "text": "and"
+        },
+        {
+          "start": 67.412,
+          "end": 67.67,
+          "text": "pay"
+        },
+        {
+          "start": 67.684,
+          "end": 67.82,
+          "text": "in"
+        },
+        {
+          "start": 67.833,
+          "end": 68.241,
+          "text": "full"
+        }
+      ]
+    }
+  ]
+}

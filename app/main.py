@@ -19,6 +19,7 @@ from app.config import (
 from app.kokoro_engine import engine
 from app.edge_engine import edge_engine
 from app.credit_engine import credit_engine
+from app.story_routes import register_story_routes
 
 app = FastAPI(
     title="Fintech Voice Studio API",
@@ -34,6 +35,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Story video API (POST /api/story), generated stories (/stories) and the player page (/player)
+register_story_routes(app)
 
 # In-memory generation history cache (persisted to outputs folder)
 GENERATION_HISTORY = []

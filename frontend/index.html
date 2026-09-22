@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Credit Story Player</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@500;600&display=swap">
+  <link rel="stylesheet" href="player.css">
+  <script src="config.js"></script>
+  <script>
+    // Theme before first paint: ?theme=light|dark wins, then config.js, then dark.
+    (function () {
+      var asked = new URLSearchParams(location.search).get('theme');
+      var mode = asked || (window.STORY_PLAYER_CONFIG || {}).theme || 'dark';
+      document.documentElement.dataset.mode = mode === 'light' ? 'light' : 'dark';
+    })();
+  </script>
+</head>
+<body>
+  <aside class="builder" id="builder" aria-label="Story builder">
+    <header class="b-head">
+      <div>
+        <h1 class="b-title">Create a <span class="b-accent">credit story</span></h1>
+        <p class="b-sub">Upload a CRIF report for the detailed walkthrough, or enter quick details for a short summary video.</p>
+      </div>
+      <button type="button" class="b-link" id="sampleBtn">Load sample</button>
+    </header>
+
+    <div class="b-tabs" role="tablist">
+      <button type="button" role="tab" id="tabCrif" aria-selected="true" aria-controls="panelCrif">CRIF report</button>
+      <button type="button" role="tab" id="tabDetails" aria-selected="false" aria-controls="panelDetails">Quick</button>
+      <button type="button" role="tab" id="tabJson" aria-selected="false" aria-controls="panelJson">JSON</button>
+      <button type="button" role="tab" id="tabFile" aria-selected="false" aria-controls="panelFile">File</button>
+    </div>
+
+    <div class="b-body">
+      <section role="tabpanel" id="panelCrif" aria-labelledby="tabCrif">
+        <p class="b-hint b-lead">Detailed 8–12 minute walkthrough of a CRIF High Mark report: score, every account, month-by-month payments, cards, loans, enquiries and an action plan.</p>
+        <label class="b-drop" id="crifDrop">
+          <input type="file" id="crifFile" hidden>
+          <span class="b-drop-icon" id="crifDropIcon"></span>
+          <span class="b-drop-title">Drop the CRIF response file here</span>
+          <span class="b-drop-sub">or click to choose it · the JSON exactly as the bureau API returns it</span>
+        </label>
+        <details class="b-paste" id="crifPasteBox">
+          <summary>Paste the JSON instead</summary>
+          <textarea id="crifPaste" class="b-json b-json-sm" spellcheck="false" aria-label="CRIF report JSON" placeholder='{"statusCode":200,"data":{"crifReport":{"INDV-REPORT-FILE":…}}}'></textarea>
+        </details>
+        <div class="b-report" id="crifSummary" hidden></div>
+        <p class="b-field-error" id="crifError"></p>
+        <h2 class="b-section">Narration</h2>
+        <div class="b-grid" id="crifOptions"></div>
+      </section>
+
+      <section role="tabpanel" id="panelDetails" aria-labelledby="tabDetails" hidden>
+        <form id="detailsForm" novalidate></form>
+      </section>
+
+      <section role="tabpanel" id="panelJson" aria-labelledby="tabJson" hidden>
+        <textarea id="jsonInput" class="b-json" spellcheck="false" aria-label="Story input JSON"></textarea>
+        <p class="b-json-status" id="jsonStatus"></p>
+        <div class="b-row">
+          <button type="button" class="b-btn" id="copyJson">Copy JSON</button>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="panelFile" aria-labelledby="tabFile" hidden>
+        <form class="b-file-form" id="devForm">
+          <label class="b-label" for="devUrl">Story JSON location</label>
+          <input class="b-input b-mono" id="devUrl" type="text" spellcheck="false" autocomplete="off">
+          <div class="b-row">
+            <button type="submit" class="b-btn is-primary">Load</button>
+            <button type="button" class="b-btn" id="devReload" title="Re-read the JSON and keep the current position">Reload</button>
+          </div>
+        </form>
+        <p class="b-hint">Plays an already generated story file. The default is set in <code>config.js</code>; <code>?story=…</code> overrides it. Keys: <kbd>Space</kbd> play/pause, <kbd>←</kbd>/<kbd>→</kbd> seek 5s.</p>
+        <p class="b-readout" id="devReadout">–</p>
+        <ol class="b-scenes" id="devScenes"></ol>
+      </section>
+    </div>
+
+    <footer class="b-foot">
+      <p class="b-error" id="builderError" hidden></p>
+      <button type="button" class="b-generate" id="generateBtn"><span class="b-spinner" aria-hidden="true"></span><span id="generateLabel">Generate video</span></button>
+      <p class="b-status" id="builderStatus" aria-live="polite"></p>
+    </footer>
+  </aside>
+
+  <main class="phone is-paused" id="phone" data-theme="blue">
+    <div class="bg" aria-hidden="true"><div class="blob blob-a"></div><div class="blob blob-b"></div><div class="dots"></div></div>
+
+    <header class="topbar">
+      <div class="segments" id="segments" aria-label="Chapters"></div>
+      <div class="topbar-row">
+        <span class="brand" id="brand"></span>
+        <span class="chapter" id="chapterLabel"></span>
+        <button class="icon-btn ghost" id="closeBtn" aria-label="Close story"></button>
+      </div>
+    </header>
+
+    <div class="stage" id="stage"></div>
+    <p class="captions" id="captions" aria-live="off"></p>
+
+    <div class="controls">
+      <button class="play-btn" id="playBtn" aria-label="Play"></button>
+      <span class="time" id="timeLabel">0:00 / 0:00</span>
+      <span class="spacer"></span>
+      <button class="icon-btn" id="ccBtn" aria-label="Toggle captions" aria-pressed="true"></button>
+      <button class="lang-pill" id="langBtn" aria-label="Audio language"><span class="lang-globe" id="langGlobe"></span><span id="langLabel"></span><span class="lang-chev" id="langChev"></span></button>
+    </div>
+
+    <section class="overlay loader" id="loader">
+      <div class="spinner"></div>
+      <p class="loader-title" id="loaderTitle">Preparing your credit story</p>
+      <div class="skeleton"><span></span><span></span><span></span></div>
+    </section>
+
+    <section class="overlay start" id="startScreen" hidden>
+      <div class="card start-card">
+        <span class="tile tint-blue tile-lg" id="startIcon"></span>
+        <p class="eyebrow">Your credit story</p>
+        <h1 class="start-title" id="startTitle"></h1>
+        <p class="start-sub" id="startSub"></p>
+        <div class="start-meta" id="startMeta"></div>
+        <button class="btn-primary" id="startBtn"><span class="btn-icon" id="startBtnIcon"></span>Play story</button>
+      </div>
+      <div class="badges" id="startBadges"></div>
+    </section>
+
+    <section class="overlay end" id="endCard" hidden>
+      <div class="card end-card">
+        <span class="tile tint-green tile-lg" id="endIcon"></span>
+        <h2 class="end-title" id="endTitle"></h2>
+        <p class="end-text" id="endText"></p>
+        <ul class="recap" id="endRecap"></ul>
+        <button class="btn-primary" id="replayBtn"><span class="btn-icon" id="replayIcon"></span><span id="replayLabel">Replay story</span></button>
+        <button class="btn-secondary" id="endCloseBtn">Close</button>
+      </div>
+      <p class="end-disclaimer" id="endDisclaimer"></p>
+    </section>
+
+    <section class="overlay error" id="errorBox" hidden>
+      <div class="card error-card">
+        <h2>Couldn't load the story</h2>
+        <pre id="errorText"></pre>
+        <p class="error-hint" id="errorHint"></p>
+      </div>
+    </section>
+
+    <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+    <section class="sheet" id="langSheet" aria-label="Audio language" hidden>
+      <div class="sheet-head">
+        <h2>Audio language</h2>
+        <button class="icon-btn" id="sheetClose" aria-label="Close"></button>
+      </div>
+      <ul class="sheet-list" id="langList"></ul>
+    </section>
+  </main>
+
+  <audio id="audio" preload="auto"></audio>
+
+  <script src="icons.js"></script>
+  <script src="player.js"></script>
+  <script src="builder.js"></script>
+</body>
+</html>
