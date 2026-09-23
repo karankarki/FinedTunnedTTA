@@ -3,7 +3,7 @@
 The narration text comes from the credit engine's stage scripts, so the story says exactly
 what the credit report API would. Audio is synthesized with Azure Neural voices via
 edge-tts while capturing word-boundary events; those timings place every scene, beat and
-caption of the story JSON that frontend/index.html plays.
+caption of the story JSON that the mobile / React apps animate.
 """
 import asyncio
 import hashlib
@@ -711,6 +711,11 @@ def segment_files(lang: str, index: int):
     return f"{lang}/{index:02d}.mp3", f"{lang}/{index:02d}.json"
 
 
+def full_files(lang: str):
+    """The whole narration as one MP3 and its animation timeline as one JSON, relative to the story folder."""
+    return f"full.{lang}.mp3", f"full.{lang}.json"
+
+
 def read_manifest(folder: Path, lang: str) -> Optional[dict]:
     try:
         return json.loads((folder / f"story.{lang}.json").read_text(encoding="utf-8"))
@@ -719,14 +724,65 @@ def read_manifest(folder: Path, lang: str) -> Optional[dict]:
 
 
 def is_complete(folder: Path, langs: List[str]) -> bool:
-    """True when every language's manifest says ready and all its segment files exist."""
+    """True when every language's manifest says ready and all its segment and full files exist."""
     for lang in langs:
         manifest = read_manifest(folder, lang) or {}
         segments = manifest.get("segments") or []
         if manifest.get("status") != "ready" or not segments or not all(
                 (folder / s.get("audio", "")).is_file() and (folder / s.get("data", "")).is_file() for s in segments):
             return False
+        if not all((folder / f).is_file() for f in full_files(lang)):
+            return False
     return True
+
+
+def _shift_caption(c: dict, offset: float) -> dict:
+    return {**c, "start": round(c["start"] + offset, 3), "end": round(c["end"] + offset, 3),
+            "words": [{**w, "start": round(w["start"] + offset, 3), "end": round(w["end"] + offset, 3)}
+                      for w in c.get("words") or []]}
+
+
+async def build_full(folder: Path, manifest: dict) -> dict:
+    """Join a finished segmented story into one MP3 plus one timeline JSON on that MP3's clock.
+
+    Each segment is decoded and padded or trimmed to its recorded duration before joining, so
+    segment k starts exactly at the sum of the earlier durations and every scene, beat and caption
+    time stays in sync. Scene beats are relative to their scene's start, so only scene start/end
+    and caption/word times move. Returns the timeline (also written to full.<lang>.json).
+    """
+    lang = manifest["language"]
+    audio_name, data_name = full_files(lang)
+    pieces, scenes, captions, chapters, offset = [], [], [], [], 0.0
+    for seg in manifest["segments"]:
+        samples, sr = await asyncio.to_thread(sf.read, str(folder / seg["audio"]), dtype="float32")
+        if samples.ndim > 1:
+            samples = samples.mean(axis=1)
+        n = int(round(seg["duration"] * SAMPLE_RATE))
+        pieces.append(np.pad(samples[:n], (0, max(0, n - len(samples)))))
+        data = json.loads((folder / seg["data"]).read_text(encoding="utf-8"))
+        for s in data.get("scenes") or []:
+            scenes.append({**s, "start": round(s["start"] + offset, 2), "end": round(s["end"] + offset, 2)})
+        captions += [_shift_caption(c, offset) for c in data.get("captions") or []]
+        if seg.get("continues") and chapters:
+            chapters[-1]["end"] = round(offset + seg["duration"], 2)
+        else:
+            chapters.append({"id": seg["id"], "chapter": seg["chapter"], "theme": seg.get("theme"),
+                             "start": round(offset, 2), "end": round(offset + seg["duration"], 2)})
+        offset += n / SAMPLE_RATE
+    await encode_mp3(np.concatenate(pieces), folder / audio_name, "96k")
+
+    timeline = {k: v for k, v in manifest.items() if k not in ("segments", "status", "error", "format")}
+    timeline.update({
+        "format": "single",
+        "status": "ready",
+        "audio": {**manifest.get("audio", {}), "src": audio_name, "duration": round(offset, 3)},
+        "duration": round(offset, 3),
+        "chapters": chapters,
+        "scenes": scenes,
+        "captions": captions,
+    })
+    write_json(folder / data_name, timeline)
+    return timeline
 
 
 class SegmentedStoryJob:
@@ -746,6 +802,7 @@ class SegmentedStoryJob:
     def __init__(self, sid: str, folder: Path, langs: List[str], speed: float):
         self.sid, self.folder, self.langs, self.speed = sid, folder, langs, speed
         self.durations = {lang: [self._on_disk(lang, i) for i in range(self.count)] for lang in langs}
+        self.full_ready = {lang: False for lang in langs}   # full.<lang>.mp3/json written by this run
         self.first_ready = asyncio.Event()
         self.error: Optional[str] = None     # first failure, if any
         self.start_failed = False            # the first segment failed, so nothing is playable
@@ -823,6 +880,7 @@ class SegmentedStoryJob:
             "duration": round(total, 2),
             "player": {"captions": True},
             **self.story_fields(lang, total),
+            **({"full": dict(zip(("audio", "data"), full_files(lang)))} if self.full_ready[lang] else {}),
             "segments": segments,
         }
 
@@ -865,6 +923,14 @@ class SegmentedStoryJob:
         failures = [r for r in results if isinstance(r, BaseException)]
         if failures:
             print(f"[!] Story {self.sid}: {len(failures)} segment(s) failed: {self.error}")
+        for lang in self.langs:
+            if self.ready_count(lang) == self.count:
+                try:
+                    await build_full(self.folder, self.manifest(lang))
+                    self.full_ready[lang] = True
+                except Exception as err:
+                    self.error = self.error or f"joining the full audio ({lang}): {err}"
+                    print(f"[!] Story {self.sid}: {self.error}")
         self.finished = True
         for lang in self.langs:
             self.write_manifest(lang)   # marks it ready, or failed with the error

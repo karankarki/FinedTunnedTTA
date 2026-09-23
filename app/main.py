@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -35,7 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Story video API (POST /api/story), generated stories (/stories) and the player page (/player)
+# Story API (POST /api/story, /api/story/crif) and the generated MP3 + JSON files (/stories)
 register_story_routes(app)
 
 # In-memory generation history cache (persisted to outputs folder)
@@ -176,114 +176,6 @@ def preview_phonemes(req: PhonemizeRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
-
-class TunerPreviewRequest(BaseModel):
-    text: str = Field(..., description="Script text to synthesize")
-    voice: str = Field(default="af_heart", description="Primary voice")
-    secondary_voice: Optional[str] = Field(default=None, description="Secondary blend voice")
-    blend_weight: Optional[float] = Field(default=0.0, ge=0.0, le=1.0)
-    speed: Optional[float] = Field(default=0.92, ge=0.5, le=2.0)
-    language: Optional[str] = Field(default="hi")
-    master_audio: Optional[bool] = Field(default=True)
-    bg_music: Optional[bool] = Field(default=False)
-
-@app.get("/tuner")
-@app.get("/voice-tuner")
-def serve_voice_tuner():
-    """Interactive Voice Tuner Lab web page for calibrating voices and exporting config."""
-    tuner_path = BASE_DIR / "app" / "templates" / "tuner.html"
-    if tuner_path.exists():
-        return HTMLResponse(content=tuner_path.read_text(), status_code=200)
-    raise HTTPException(status_code=404, detail="Tuner page not found")
-
-@app.post("/api/tuner/preview")
-def preview_tuned_voice(req: TunerPreviewRequest):
-    """Synthesize voice preview with real-time blending, mastering, and ambient bed."""
-    import time, soundfile as sf
-    try:
-        is_hindi = str(req.language).lower() in ["hi", "hindi"]
-        lang_code = "h" if is_hindi else "a"
-        
-        # Phonetic normalization
-        synth_text = credit_engine.normalize_fintech_script(req.text, is_hindi=is_hindi)
-        
-        t_start = time.time()
-        use_edge = (
-            "neural" in str(req.voice).lower()
-            or (is_hindi and not str(req.voice).startswith("af_") and not str(req.voice).startswith("hf_"))
-        )
-        if use_edge:
-            voice_to_use = req.voice if "neural" in str(req.voice).lower() else ("hi-IN-SwaraNeural" if is_hindi else "en-IN-NeerjaExpressiveNeural")
-            edge_res = edge_engine.synthesize(
-                text=synth_text,
-                voice=voice_to_use,
-                language="hi" if is_hindi else "en",
-                speed=req.speed or 0.92
-            )
-            mp3_path = Path(edge_res["filepath"])
-            t_elapsed = round(time.time() - t_start, 2)
-            return {
-                "status": "success",
-                "audio_url": edge_res["audio_url"],
-                "duration_secs": edge_res["duration_secs"],
-                "response_time_secs": t_elapsed,
-                "configuration": {
-                    "voice": voice_to_use,
-                    "speed": req.speed or 0.92,
-                    "language": req.language or "hi",
-                    "engine": "edge-neural"
-                }
-            }
-
-        res = engine.synthesize(
-            text=synth_text,
-            voice=req.voice,
-            secondary_voice=req.secondary_voice,
-            blend_weight=req.blend_weight or 0.0,
-            speed=req.speed or 0.92,
-            lang_code=lang_code,
-            split_pattern="none",
-            gap_duration=0.0
-        )
-        
-        wav_path = Path(res["filepath"])
-        
-        # If background music is requested, mix ambient pad
-        if req.bg_music:
-            raw_audio, sr = sf.read(str(wav_path))
-            if raw_audio.ndim > 1:
-                raw_audio = raw_audio.mean(axis=1)
-            dur = len(raw_audio) / sr
-            bed = credit_engine.generate_ambient_bed(duration_secs=dur, sr=sr)
-            min_len = min(len(raw_audio), len(bed))
-            raw_audio[:min_len] += bed[:min_len]
-            sf.write(str(wav_path), raw_audio, sr)
-        
-        # Convert to mastered MP3
-        mp3_filename = wav_path.stem + "_tuned.mp3"
-        mp3_path = OUTPUTS_DIR / mp3_filename
-        credit_engine.convert_wav_to_mp3(wav_path, mp3_path, master_audio=req.master_audio if req.master_audio is not None else True)
-        
-        t_elapsed = round(time.time() - t_start, 2)
-        
-        return {
-            "status": "success",
-            "audio_url": f"/api/audio/{mp3_filename}",
-            "duration_secs": res["duration_secs"],
-            "response_time_secs": t_elapsed,
-            "configuration": {
-                "voice": req.voice,
-                "secondary_voice": req.secondary_voice,
-                "blend_weight": req.blend_weight or 0.0,
-                "speed": req.speed or 0.92,
-                "master_audio": req.master_audio if req.master_audio is not None else True,
-                "bg_music": req.bg_music if req.bg_music is not None else False,
-                "language": req.language or "hi"
-            }
-        }
-    except Exception as e:
-        print(f"[!] Tuner error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 class CreditReportRequest(BaseModel):
     credit_score: int = Field(default=782, ge=300, le=900, description="User's credit score (300-900)")

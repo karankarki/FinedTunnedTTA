@@ -36,8 +36,10 @@ TTS/
 │   ├── edge_engine.py         # Studio Human Azure Neural TTS engine
 │   ├── kokoro_engine.py       # Offline Kokoro-82M neural TTS engine & pipeline
 │   ├── main.py                # FastAPI REST API endpoints & audio streaming
-│   └── templates/
-│       └── tuner.html         # Interactive Voice Studio & Tuner UI
+│   ├── story_engine.py        # Narration engine (edge-tts + word timings), quick-summary story
+│   ├── story_routes.py        # POST /api/story, POST /api/story/crif, GET /api/story/{id}
+│   ├── crif_report.py         # CRIF High Mark response -> plain facts
+│   └── crif_story.py          # CRIF facts -> chaptered script in English + Hindi
 ├── outputs/                   # Cached audio segments and reports (.gitkeep)
 ├── API_DOCUMENTATION.md       # Comprehensive API Reference & Integration Guide
 ├── Dockerfile                 # Production container image definition
@@ -48,6 +50,49 @@ TTS/
 ├── start.sh                   # Server launch script
 └── README.md                  # Project overview & documentation
 ```
+
+---
+
+## 🎬 Story API (MP3 + animation JSON for apps)
+
+The server is an engine only: apps call the API and get back **one MP3** and **one JSON timeline** to animate in sync with it. There is no web frontend.
+
+| Call | What it does |
+|------|--------------|
+| `POST /api/story` | Quick summary (1–2 min) from a few fields: `credit_score`, `customer_name`, `missed_payments_count`, `active_credit_cards`, `credit_utilization_pct`, `recent_inquiries`, `languages` (`["hi","en"]`) … |
+| `POST /api/story/crif` | Detailed walkthrough from a CRIF High Mark response, sent as-is (`?languages=hi,en&customer_name=…`) |
+| `GET /api/story/{story_id}` | Status of a story: poll until `status` is `ready` and `full` is set |
+
+Add `?complete=true` to either POST to wait for the finished story (a few seconds for a quick summary, about a minute for CRIF). Without it the API answers in 1–2 s with `status: "generating"`, and you poll `GET /api/story/{story_id}`.
+
+```bash
+curl -X POST "https://<host>/api/story?complete=true" -H "Content-Type: application/json" \
+  -d '{"customer_name":"Karan","customer_name_hi":"करण","credit_score":776,"languages":["hi"]}'
+```
+
+```json
+{
+  "story_id": "4bc15b8da6eca2a7",
+  "status": "ready",
+  "full": {
+    "language": "hi",
+    "audio_url": "https://<host>/stories/4bc15b8da6eca2a7/full.hi.mp3",
+    "json_url":  "https://<host>/stories/4bc15b8da6eca2a7/full.hi.json",
+    "duration": 84.2
+  },
+  "languages": [{"code": "hi", "label": "हिंदी", "story_url": "…", "full": {…}}],
+  "expires_at": "2026-09-24T10:00:00+00:00"
+}
+```
+
+`full.<lang>.json` is on the MP3's clock (seconds from its start):
+
+- `scenes[]`: `{id, type, chapter, theme, start, end, props, beats[]}`. `type` says which visual to draw (e.g. `score_dial`), `props` holds its data, and each beat fires at `scene.start + beat.at`.
+- `captions[]`: sentences with `start`, `end`, `text` and `words[]` (each word timed, for karaoke highlighting).
+- `chapters[]`: `{id, chapter, start, end}` for a chapter list or seek bar.
+- `intro`, `end_card`, `brand`, `title`: text for the start and end screens.
+
+While a story is still recording, `story_url` (`story.<lang>.json`) lists each finished segment's own MP3 + JSON (times from that segment's start), and `stage1` is the first segment, so an app can start playing within 1–2 s if it wants to. Stories are deleted 24 h after they are made (`STORY_TTL_HOURS`).
 
 ---
 

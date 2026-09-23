@@ -20,9 +20,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchaudio && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application source (frontend/ is the player page served at /player/, which apps embed)
+# Copy application source
 COPY app/ ./app/
-COPY frontend/ ./frontend/
 COPY cli.py .
 
 # Create persistent outputs directory
@@ -36,4 +35,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:${PORT}/api/status || exit 1
 
 # Production lightweight Uvicorn server (<100MB RAM, avoids 512MB free tier OOM)
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]
