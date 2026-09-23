@@ -711,6 +711,25 @@ def segment_files(lang: str, index: int):
     return f"{lang}/{index:02d}.mp3", f"{lang}/{index:02d}.json"
 
 
+# How apps draw the timeline, like a video: every scene is laid out on this fixed design frame
+# (logical pixels) and the whole frame is scaled to fit the screen ("contain", letterboxed with
+# `background`), so placement is identical on every device. safe_area is kept clear of content:
+# the top for the app's overlay buttons, the bottom for captions.
+CANVAS = {"width": 360, "height": 640, "fit": "contain", "background": "#000000",
+          "safe_area": {"top": 56, "right": 20, "bottom": 116, "left": 20},
+          "captions": {"bottom": 20, "max_lines": 2, "max_chars": 84}}
+PALETTE = {
+    "accent": "#1677FF",
+    "text": ["#F5F5F7", "#C7C7CC", "#8E8E93"],
+    "surface": ["#111113", "#1A1A1D", "#242428"],
+    "line": "#17FFFFFF",
+    "tones": {"good": "#12B76A", "warn": "#F79009", "bad": "#F04438", "neutral": "#8B72FF"},
+    "cells": {"ok": "#12B76A", "late": "#F79009", "severe": "#F04438", "none": "#24FFFFFF"},
+    "themes": {"blue": ["#1D4ED8", "#1E3A8A"], "green": ["#1D4ED8", "#065F46"],
+               "amber": ["#92400E", "#1E3A8A"], "violet": ["#3730A3", "#1E3A8A"]},
+}
+
+
 def full_files(lang: str):
     """The whole narration as one MP3 and its animation timeline as one JSON, relative to the story folder."""
     return f"full.{lang}.mp3", f"full.{lang}.json"
@@ -775,6 +794,8 @@ async def build_full(folder: Path, manifest: dict) -> dict:
     timeline.update({
         "format": "single",
         "status": "ready",
+        "canvas": CANVAS,
+        "palette": PALETTE,
         "audio": {**manifest.get("audio", {}), "src": audio_name, "duration": round(offset, 3)},
         "duration": round(offset, 3),
         "chapters": chapters,

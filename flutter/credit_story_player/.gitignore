@@ -1,0 +1,14 @@
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+example/.dart_tool/
+example/build/
+# real CRIF report data: local testing only
+test/data/crif_en.json
+test/failures/
+test/goldens/
+# the repo root ignores lib/ (Python builds); Dart sources live there
+!lib/
+!example/lib/
