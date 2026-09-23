@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import OUTPUTS_DIR
+from app.metrics import RequestMeter, server_stats
 from app.crif_report import CrifFormatError
 from app.crif_story import CrifStoryJob, prepare, report_summary
 from app.story_engine import LANGUAGE_LABELS, SegmentedStoryJob, full_files, is_complete, read_manifest
@@ -178,6 +179,14 @@ async def create_story(request: Request, payload: Dict[str, Any] = Body(...), la
     If recording takes longer than the server will wait, the answer is HTTP 202 with
     "status": "generating" and a poll_url (GET /api/story/<story_id>).
     """
+    meter = RequestMeter()
+    try:
+        return await _create_story(request, payload, languages, customer_name, voice_speed, include_json, meter)
+    finally:
+        meter.finish()   # stops the memory sampler even when the request fails
+
+
+async def _create_story(request, payload, languages, customer_name, voice_speed, include_json, meter: RequestMeter):
     report, langs, name, speed = _options(payload, languages, customer_name, voice_speed)
     try:
         p, name, chapters, langs, story_id = prepare(report, name, langs, speed)
@@ -210,7 +219,18 @@ async def create_story(request: Request, payload: Dict[str, Any] = Body(...), la
     out["chapters"] = [c["chapter"] for c, s in zip(chapters, starts) if s]
     if out["status"] == "failed":
         raise HTTPException(status_code=502, detail=f"Could not generate the story: {out.get('error', 'unknown error')}")
+    # CPU and memory of the whole server (plus ffmpeg) while this request ran
+    out["metrics"] = meter.finish()
+    log.info("Story %s: %.1f s, %.1f CPU-s (%.2f cores avg), memory peak %.0f MB",
+             story_id, out["metrics"]["response_time_s"], out["metrics"]["cpu_seconds"],
+             out["metrics"]["cpu_cores_used_avg"], out["metrics"]["memory_peak_mb"])
     return JSONResponse(out, status_code=200 if out["status"] == "ready" else 202)
+
+
+@router.get("/api/metrics")
+def get_metrics():
+    """Live CPU and memory utilisation of the server, plus how many stories are recording now."""
+    return {**server_stats(), "stories_recording": len(_jobs)}
 
 
 @router.get("/api/story/{story_id}")
