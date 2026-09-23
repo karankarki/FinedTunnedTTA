@@ -774,24 +774,43 @@ async def build_full(folder: Path, manifest: dict) -> dict:
     """
     lang = manifest["language"]
     audio_name, data_name = full_files(lang)
-    pieces, scenes, captions, chapters, offset = [], [], [], [], 0.0
-    for seg in manifest["segments"]:
-        samples, sr = await asyncio.to_thread(sf.read, str(folder / seg["audio"]), dtype="float32")
-        if samples.ndim > 1:
-            samples = samples.mean(axis=1)
-        n = int(round(seg["duration"] * SAMPLE_RATE))
-        pieces.append(np.pad(samples[:n], (0, max(0, n - len(samples)))))
-        data = json.loads((folder / seg["data"]).read_text(encoding="utf-8"))
-        for s in data.get("scenes") or []:
-            scenes.append({**s, "start": round(s["start"] + offset, 2), "end": round(s["end"] + offset, 2)})
-        captions += [_shift_caption(c, offset) for c in data.get("captions") or []]
-        if seg.get("continues") and chapters:
-            chapters[-1]["end"] = round(offset + seg["duration"], 2)
-        else:
-            chapters.append({"id": seg["id"], "chapter": seg["chapter"], "theme": seg.get("theme"),
-                             "start": round(offset, 2), "end": round(offset + seg["duration"], 2)})
-        offset += n / SAMPLE_RATE
-    await encode_mp3(np.concatenate(pieces), folder / audio_name, "96k")
+    # Stream each segment into one ffmpeg process, so only one chapter's audio is in memory at a
+    # time: holding a whole 13-minute track (and its copies) exceeded a 512 MB server. The MP3 is
+    # written under a temporary name and renamed when complete, so it never looks finished early.
+    tmp_audio = folder / f".{audio_name}.part.mp3"
+    encoder = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-v", "error", "-f", "f32le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "pipe:0",
+        "-codec:a", "libmp3lame", "-b:a", "96k", str(tmp_audio), stdin=asyncio.subprocess.PIPE)
+    scenes, captions, chapters, offset = [], [], [], 0.0
+    try:
+        for seg in manifest["segments"]:
+            samples, sr = await asyncio.to_thread(sf.read, str(folder / seg["audio"]), dtype="float32")
+            if samples.ndim > 1:
+                samples = samples.mean(axis=1)
+            n = int(round(seg["duration"] * SAMPLE_RATE))
+            encoder.stdin.write(np.pad(samples[:n], (0, max(0, n - len(samples)))).astype(np.float32).tobytes())
+            await encoder.stdin.drain()
+            del samples
+            data = json.loads((folder / seg["data"]).read_text(encoding="utf-8"))
+            for s in data.get("scenes") or []:
+                scenes.append({**s, "start": round(s["start"] + offset, 2), "end": round(s["end"] + offset, 2)})
+            captions += [_shift_caption(c, offset) for c in data.get("captions") or []]
+            if seg.get("continues") and chapters:
+                chapters[-1]["end"] = round(offset + seg["duration"], 2)
+            else:
+                chapters.append({"id": seg["id"], "chapter": seg["chapter"], "theme": seg.get("theme"),
+                                 "start": round(offset, 2), "end": round(offset + seg["duration"], 2)})
+            offset += n / SAMPLE_RATE
+        encoder.stdin.close()
+        if await encoder.wait() != 0:
+            raise RuntimeError(f"ffmpeg failed joining {audio_name}")
+    except BaseException:
+        if encoder.returncode is None:
+            encoder.kill()
+            await encoder.wait()
+        tmp_audio.unlink(missing_ok=True)
+        raise
+    os.replace(tmp_audio, folder / audio_name)
 
     timeline = {k: v for k, v in manifest.items() if k not in ("segments", "status", "error", "format")}
     timeline.update({
