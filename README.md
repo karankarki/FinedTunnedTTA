@@ -61,6 +61,11 @@ Apps call one endpoint with the CRIF High Mark report and get back, for **Hindi 
 |------|--------------|
 | `POST /api/story` | Body: the CRIF High Mark response, unchanged. Waits until the story is recorded, then returns `hi` and `en`, each with `audio_url`, `json_url`, `duration` and `json` (the full timeline) |
 | `GET /api/story/{story_id}` | The same response for a story made earlier. Poll it after a `202` |
+| `POST /api/story/stages` | Same body; returns stage 1 in a couple of seconds, with `next_url` |
+| `GET /api/story/{story_id}/stage/{n}` | Stage n (hi + en audio and JSON), with `next_url` for the one after |
+| `GET /api/metrics` | Live CPU and memory of the server |
+
+**Stage by stage (fastest start):** `POST /api/story/stages` with the same body returns **stage 1** in Hindi and English as soon as it is recorded (about 2 s locally), plus `total_stages`, the chapter list, the story's `intro`/`end_card`/`canvas`/`palette` and a `next_url`. `GET /api/story/{story_id}/stage/{n}` returns stage n; call each response's `next_url` until it is `null`. The rest of the story records in the background, so the next stage is normally ready before the current one finishes playing. If a stage is still recording after 90 s (`STAGE_WAIT_SECONDS`), the answer is `202` with a `retry_url`. Each stage's audio and JSON start at 0.
 
 Options (query string): `languages=hi,en` (default both), `customer_name=Karan`, `voice_speed=1.05`, and `include_json=false` to return URLs only.
 

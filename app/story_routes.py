@@ -24,19 +24,22 @@ from app.config import OUTPUTS_DIR
 from app.metrics import RequestMeter, server_stats
 from app.crif_report import CrifFormatError
 from app.crif_story import CrifStoryJob, prepare, report_summary
-from app.story_engine import LANGUAGE_LABELS, SegmentedStoryJob, full_files, is_complete, read_manifest
+from app.story_engine import (LANGUAGE_LABELS, SegmentedStoryJob, full_files, is_complete, join_segments, read_manifest,
+                              segment_files, story_meta, write_json)
 
 STORIES_DIR = OUTPUTS_DIR / "stories"
 
 STORY_TTL_SECONDS = float(os.environ.get("STORY_TTL_HOURS", "24")) * 3600
 SWEEP_EVERY_SECONDS = 15 * 60
 COMPLETE_WAIT = float(os.environ.get("STORY_WAIT_SECONDS", "240"))   # longest the API holds a request
+STAGE_WAIT = float(os.environ.get("STAGE_WAIT_SECONDS", "90"))       # longest a stage request waits for it
 DEFAULT_LANGUAGES = ["hi", "en"]
 
 log = logging.getLogger("story")
 router = APIRouter(tags=["Story"])
 _jobs: Dict[str, SegmentedStoryJob] = {}   # stories still being recorded, by story id
 _sweeper: Optional[asyncio.Task] = None
+_stage_locks: Dict[str, asyncio.Lock] = {}   # one join at a time per stage file
 
 
 def _created_at(folder) -> float:
@@ -186,7 +189,9 @@ async def create_story(request: Request, payload: Dict[str, Any] = Body(...), la
         meter.finish()   # stops the memory sampler even when the request fails
 
 
-async def _create_story(request, payload, languages, customer_name, voice_speed, include_json, meter: RequestMeter):
+def _begin(payload, languages, customer_name, voice_speed):
+    """Parse the report and start (or join, or reuse) its recording. Returns the parsed story, the
+    running job (None when cached) and whether it was cached."""
     report, langs, name, speed = _options(payload, languages, customer_name, voice_speed)
     try:
         p, name, chapters, langs, story_id = prepare(report, name, langs, speed)
@@ -194,7 +199,6 @@ async def _create_story(request, payload, languages, customer_name, voice_speed,
         log.warning("Story rejected: %s", err)
         raise HTTPException(status_code=422, detail=str(err))
     log.info("Story %s: %d chapters, languages %s", story_id, len(chapters), ",".join(langs))
-
     folder = STORIES_DIR / story_id
     sweep_expired_stories()
     job = _jobs.get(story_id)
@@ -204,6 +208,12 @@ async def _create_story(request, payload, languages, customer_name, voice_speed,
     else:
         # A story that was interrupted (failed segments, server restart) resumes from what is on disk.
         job = job or _start_job(CrifStoryJob(p, name, chapters, langs, speed, story_id, folder))
+    return p, chapters, langs, story_id, job, cached
+
+
+async def _create_story(request, payload, languages, customer_name, voice_speed, include_json, meter: RequestMeter):
+    p, chapters, langs, story_id, job, cached = _begin(payload, languages, customer_name, voice_speed)
+    if not cached:
         try:
             await asyncio.wait_for(asyncio.shield(job.task), COMPLETE_WAIT)
         except asyncio.TimeoutError:
@@ -225,6 +235,161 @@ async def _create_story(request, payload, languages, customer_name, voice_speed,
              story_id, out["metrics"]["response_time_s"], out["metrics"]["cpu_seconds"],
              out["metrics"]["cpu_cores_used_avg"], out["metrics"]["memory_peak_mb"])
     return JSONResponse(out, status_code=200 if out["status"] == "ready" else 202)
+
+
+# ------------------------------------------------------------------------------------ stages
+# One stage (chapter) at a time, so an app can start playing within seconds and fetch the next
+# stage while the current one plays. A stage is one recorded segment, or several joined (the
+# welcome is recorded in two parts); its audio and JSON are on the stage's own clock.
+
+def _stage_groups(manifest: dict) -> List[List[int]]:
+    """Segment indices of each stage: a segment marked `continues` belongs to the stage before it."""
+    groups: List[List[int]] = []
+    for i, seg in enumerate(manifest.get("segments") or []):
+        if seg.get("continues") and groups:
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+    return groups
+
+
+def _segments_ready(story_id: str, langs: List[str], idxs: List[int]) -> bool:
+    folder, job = STORIES_DIR / story_id, _jobs.get(story_id)
+    for lang in langs:
+        for i in idxs:
+            if job is not None and lang in job.durations:
+                if job.durations[lang][i] is None:
+                    return False
+            elif not all((folder / f).is_file() for f in segment_files(lang, i)):
+                return False
+    return True
+
+
+async def _wait_for_stage(story_id: str, langs: List[str], idxs: List[int], timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        if _segments_ready(story_id, langs, idxs):
+            return True
+        job = _jobs.get(story_id)
+        if job is None or job.task.done() or time.monotonic() >= deadline:
+            return _segments_ready(story_id, langs, idxs)
+        await asyncio.sleep(0.25)
+
+
+async def _stage_media(request: Request, story_id: str, lang: str, number: int, idxs: List[int],
+                       manifest: dict, include_json: bool) -> dict:
+    """Audio and JSON of one stage in one language, joining its segments first if it has several."""
+    folder = STORIES_DIR / story_id
+    base = str(request.base_url).rstrip("/") + f"/stories/{story_id}"
+    if len(idxs) == 1:
+        audio, data = segment_files(lang, idxs[0])
+        content = json.loads((folder / data).read_text(encoding="utf-8"))
+        timeline = {"duration": content.get("duration"), "scenes": content.get("scenes") or [],
+                    "captions": content.get("captions") or []}
+    else:
+        audio, data = f"stages/{lang}/{number:02d}.mp3", f"stages/{lang}/{number:02d}.json"
+        lock = _stage_locks.setdefault(f"{story_id}/{audio}", asyncio.Lock())
+        async with lock:
+            if not ((folder / audio).is_file() and (folder / data).is_file()):
+                segs = []
+                for i in idxs:
+                    a, d = segment_files(lang, i)
+                    dur = json.loads((folder / d).read_text(encoding="utf-8"))["duration"]
+                    segs.append({**manifest["segments"][i], "audio": a, "data": d, "duration": dur})
+                scenes, captions, _, duration = await join_segments(folder, segs, folder / audio)
+                write_json(folder / data, {"duration": duration, "scenes": scenes, "captions": captions})
+        timeline = json.loads((folder / data).read_text(encoding="utf-8"))
+    out = {"label": LANGUAGE_LABELS.get(lang, lang), "audio_url": f"{base}/{audio}",
+           "json_url": f"{base}/{data}", "duration": timeline.get("duration")}
+    if include_json:
+        out["json"] = timeline
+    return out
+
+
+async def _stage_response(request: Request, story_id: str, langs: List[str], number: int,
+                          include_json: bool, wait: float, with_meta: bool):
+    folder = STORIES_DIR / story_id
+    manifest = read_manifest(folder, langs[0])
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Story not found (it may have expired). POST the report again.")
+    groups = _stage_groups(manifest)
+    total = len(groups)
+    if not 1 <= number <= total:
+        raise HTTPException(status_code=404, detail=f"This story has stages 1 to {total}.")
+    idxs = groups[number - 1]
+    root = str(request.base_url).rstrip("/")
+    head = {"story_id": story_id, "stage": number, "total_stages": total,
+            "chapter": manifest["segments"][idxs[0]].get("chapter"), "languages": langs}
+    if not await _wait_for_stage(story_id, langs, idxs, wait):
+        job = _jobs.get(story_id)
+        if job is not None and not job.task.done():
+            return JSONResponse({**head, "status": "generating", "retry_after": 2,
+                                 "retry_url": f"{root}/api/story/{story_id}/stage/{number}"}, status_code=202)
+        error = (read_manifest(folder, langs[0]) or {}).get("error")
+        raise HTTPException(status_code=502 if error else 404,
+                            detail=f"Stage {number} could not be recorded: {error}" if error
+                            else "Stage not recorded (the story expired or the server restarted). POST the report again.")
+    out = {**head, "status": "ready"}
+    for lang in langs:
+        out[lang] = await _stage_media(request, story_id, lang, number, idxs, manifest, include_json)
+    out["next_stage"] = number + 1 if number < total else None
+    out["next_url"] = f"{root}/api/story/{story_id}/stage/{number + 1}" if number < total else None
+    if with_meta:
+        out["chapters"] = [manifest["segments"][g[0]].get("chapter") for g in groups]
+        out["story"] = story_meta(manifest)   # intro, end card, canvas, palette: same for every stage
+    return JSONResponse(out)
+
+
+@router.post("/api/story/stages")
+async def start_story_stages(request: Request, payload: Dict[str, Any] = Body(...), languages: Optional[str] = None,
+                             customer_name: Optional[str] = None, voice_speed: Optional[float] = None,
+                             include_json: bool = True):
+    """Start a story from a CRIF report and get stage 1 as soon as it is recorded (a few seconds).
+
+    Body: the CRIF High Mark response, unchanged. The response has stage 1 in each language
+    ({"audio_url", "json_url", "duration", "json": {"scenes", "captions"}}), total_stages, the
+    chapter list, the story's intro/end card/canvas/palette, and next_url: call it to get stage 2,
+    and keep following next_url until it is null. The rest of the story records in the background.
+    """
+    meter = RequestMeter()
+    try:
+        p, chapters, langs, story_id, job, cached = _begin(payload, languages, customer_name, voice_speed)
+        if job is not None:
+            await asyncio.wait_for(asyncio.shield(job.first_ready.wait()), STAGE_WAIT)
+            if job.start_failed:
+                raise HTTPException(status_code=502, detail=f"Could not generate the story narration: {job.error}")
+        response = await _stage_response(request, story_id, langs, 1, include_json, STAGE_WAIT, with_meta=True)
+        if response.status_code == 200:
+            body = json.loads(response.body)
+            body["summary"] = report_summary(p)
+            body["metrics"] = meter.finish()
+            log.info("Story %s: stage 1 of %d answered in %.1f s", story_id, body["total_stages"],
+                     body["metrics"]["response_time_s"])
+            return JSONResponse(body)
+        return response
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Stage 1 took too long to record. Try again.")
+    finally:
+        meter.finish()
+
+
+@router.get("/api/story/{story_id}/stage/{number}")
+async def get_story_stage(story_id: str, number: int, request: Request, languages: Optional[str] = None,
+                          include_json: bool = True, wait: float = STAGE_WAIT):
+    """Stage `number` (1-based) of a story started with POST /api/story/stages (or POST /api/story).
+
+    Waits up to `wait` seconds while it records, then answers 200 with the stage, or 202 with
+    retry_url if it is still recording. Each response has next_url for the following stage.
+    """
+    folder = STORIES_DIR / story_id
+    if not story_id.isalnum() or not folder.is_dir():
+        raise HTTPException(status_code=404, detail="Story not found (it may have expired). POST the report again.")
+    wanted = languages.split(",") if languages else DEFAULT_LANGUAGES
+    langs = [l for l in wanted if (folder / f"story.{l}.json").is_file()]
+    if not langs:
+        raise HTTPException(status_code=404, detail="Story not found in the requested language")
+    return await _stage_response(request, story_id, langs, number, include_json,
+                                 max(0.0, min(wait, STAGE_WAIT)), with_meta=number == 1)
 
 
 @router.get("/api/metrics")

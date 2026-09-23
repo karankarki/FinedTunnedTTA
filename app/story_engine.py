@@ -764,26 +764,26 @@ def _shift_caption(c: dict, offset: float) -> dict:
                       for w in c.get("words") or []]}
 
 
-async def build_full(folder: Path, manifest: dict) -> dict:
-    """Join a finished segmented story into one MP3 plus one timeline JSON on that MP3's clock.
+async def join_segments(folder: Path, segments: List[dict], audio_path: Path):
+    """Join recorded segments into one MP3 at audio_path; return their scenes, captions, chapters
+    and total duration, all moved onto the joined MP3's clock.
 
     Each segment is decoded and padded or trimmed to its recorded duration before joining, so
     segment k starts exactly at the sum of the earlier durations and every scene, beat and caption
     time stays in sync. Scene beats are relative to their scene's start, so only scene start/end
-    and caption/word times move. Returns the timeline (also written to full.<lang>.json).
+    and caption/word times move. Segments are streamed into one ffmpeg process, so only one
+    chapter's audio is in memory at a time: holding a whole 13-minute track (and its copies)
+    exceeded a 512 MB server. The MP3 is written under a temporary name and renamed when
+    complete, so it never looks finished early.
     """
-    lang = manifest["language"]
-    audio_name, data_name = full_files(lang)
-    # Stream each segment into one ffmpeg process, so only one chapter's audio is in memory at a
-    # time: holding a whole 13-minute track (and its copies) exceeded a 512 MB server. The MP3 is
-    # written under a temporary name and renamed when complete, so it never looks finished early.
-    tmp_audio = folder / f".{audio_name}.part.mp3"
+    tmp_audio = audio_path.with_name(f".{audio_path.name}.part.mp3")
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
     encoder = await asyncio.create_subprocess_exec(
         "ffmpeg", "-y", "-v", "error", "-f", "f32le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "pipe:0",
         "-codec:a", "libmp3lame", "-b:a", "96k", str(tmp_audio), stdin=asyncio.subprocess.PIPE)
     scenes, captions, chapters, offset = [], [], [], 0.0
     try:
-        for seg in manifest["segments"]:
+        for seg in segments:
             samples, sr = await asyncio.to_thread(sf.read, str(folder / seg["audio"]), dtype="float32")
             if samples.ndim > 1:
                 samples = samples.mean(axis=1)
@@ -803,23 +803,39 @@ async def build_full(folder: Path, manifest: dict) -> dict:
             offset += n / SAMPLE_RATE
         encoder.stdin.close()
         if await encoder.wait() != 0:
-            raise RuntimeError(f"ffmpeg failed joining {audio_name}")
+            raise RuntimeError(f"ffmpeg failed joining {audio_path.name}")
     except BaseException:
         if encoder.returncode is None:
             encoder.kill()
             await encoder.wait()
         tmp_audio.unlink(missing_ok=True)
         raise
-    os.replace(tmp_audio, folder / audio_name)
+    os.replace(tmp_audio, audio_path)
+    return scenes, captions, chapters, round(offset, 3)
 
+
+def story_meta(manifest: dict) -> dict:
+    """The parts of a story's timeline that are not tied to the clock: title, intro and end
+    cards, brand, canvas and palette."""
+    meta = {k: v for k, v in manifest.items()
+            if k not in ("segments", "status", "error", "format", "duration", "audio", "languages")}
+    return {**meta, "canvas": CANVAS, "palette": PALETTE}
+
+
+async def build_full(folder: Path, manifest: dict) -> dict:
+    """Join a finished segmented story into one MP3 plus one timeline JSON on that MP3's clock.
+    Returns the timeline (also written to full.<lang>.json)."""
+    lang = manifest["language"]
+    audio_name, data_name = full_files(lang)
+    scenes, captions, chapters, duration = await join_segments(folder, manifest["segments"], folder / audio_name)
     timeline = {k: v for k, v in manifest.items() if k not in ("segments", "status", "error", "format")}
     timeline.update({
         "format": "single",
         "status": "ready",
         "canvas": CANVAS,
         "palette": PALETTE,
-        "audio": {**manifest.get("audio", {}), "src": audio_name, "duration": round(offset, 3)},
-        "duration": round(offset, 3),
+        "audio": {**manifest.get("audio", {}), "src": audio_name, "duration": duration},
+        "duration": duration,
         "chapters": chapters,
         "scenes": scenes,
         "captions": captions,
@@ -834,7 +850,7 @@ class SegmentedStoryJob:
     Subclasses describe the segments: how many (`count`), their manifest entry
     (`segment_info`), a length estimate while unrecorded (`estimate`), how to record one
     (`record`) and the story's own manifest fields (`story_fields`). Segments are recorded in
-    playing order, first language first, CONCURRENT_SEGMENTS at a time. `first_ready` is set
+    playing order, each segment in every language before the next, CONCURRENT_SEGMENTS at a time. `first_ready` is set
     once the first language's first segment is on disk, or recording it has failed. Segments
     left on disk by an interrupted run are reused rather than recorded again.
     """
@@ -963,8 +979,10 @@ class SegmentedStoryJob:
         if self.durations[self.langs[0]][0] is not None:
             self.first_ready.set()
         slots = asyncio.Semaphore(CONCURRENT_SEGMENTS)
-        results = await asyncio.gather(*(self._record(lang, i, slots) for lang in self.langs
-                                         for i in range(self.count)), return_exceptions=True)
+        # Stage by stage, every language of a stage before the next one: the stage API can then
+        # hand out stage k in all languages while stage k+1 records.
+        results = await asyncio.gather(*(self._record(lang, i, slots) for i in range(self.count)
+                                         for lang in self.langs), return_exceptions=True)
         failures = [r for r in results if isinstance(r, BaseException)]
         if failures:
             log.error("Story %s: %d segment(s) failed: %s", self.sid, len(failures), self.error)
