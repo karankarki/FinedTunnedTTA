@@ -8,6 +8,7 @@ caption of the story JSON that the mobile / React apps animate.
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -23,6 +24,8 @@ import soundfile as sf
 
 from app.credit_engine import credit_engine
 from app.edge_engine import edge_engine
+
+log = logging.getLogger("story")
 
 SCHEMA_VERSION = "2.1"
 SAMPLE_RATE = 24000
@@ -923,6 +926,8 @@ class SegmentedStoryJob:
             except Exception as err:
                 reason = str(err) or ("the voice service timed out" if isinstance(err, asyncio.TimeoutError) else type(err).__name__)
                 self.error = self.error or f"'{self.segment_info(index)['chapter']}' ({lang}): {reason}"
+                log.warning("Story %s: segment %d (%s, %s) failed: %s", self.sid, index,
+                            self.segment_info(index)['chapter'], lang, reason)
                 if first:
                     self.start_failed = True
                     self.first_ready.set()
@@ -943,7 +948,7 @@ class SegmentedStoryJob:
                                          for i in range(self.count)), return_exceptions=True)
         failures = [r for r in results if isinstance(r, BaseException)]
         if failures:
-            print(f"[!] Story {self.sid}: {len(failures)} segment(s) failed: {self.error}")
+            log.error("Story %s: %d segment(s) failed: %s", self.sid, len(failures), self.error)
         for lang in self.langs:
             if self.ready_count(lang) == self.count:
                 try:
@@ -951,7 +956,7 @@ class SegmentedStoryJob:
                     self.full_ready[lang] = True
                 except Exception as err:
                     self.error = self.error or f"joining the full audio ({lang}): {err}"
-                    print(f"[!] Story {self.sid}: {self.error}")
+                    log.exception("Story %s: %s", self.sid, self.error)
         self.finished = True
         for lang in self.langs:
             self.write_manifest(lang)   # marks it ready, or failed with the error

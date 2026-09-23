@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import logging
 from pathlib import Path
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, status
@@ -19,6 +20,10 @@ from app.kokoro_engine import engine
 from app.edge_engine import edge_engine
 from app.credit_engine import credit_engine
 from app.story_routes import register_story_routes
+from app import logs
+
+logs.setup_logging()
+log = logging.getLogger("api")
 
 app = FastAPI(
     title="Fintech Voice Studio API",
@@ -34,6 +39,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Request logs (visible in Render's Logs tab)
+logs.install(app)
 
 # Story API (POST /api/story, /api/story/crif) and the generated MP3 + JSON files (/stories)
 register_story_routes(app)
@@ -51,6 +59,8 @@ WARM_CACHE_ON_STARTUP = os.environ.get("WARM_CACHE_ON_STARTUP", "0" if os.enviro
 @app.on_event("startup")
 async def startup_event():
     """Background startup task to pre-warm static advice cache for 1ms responses."""
+    log.info("Server started (log level %s, warm cache %s)", logging.getLevelName(logging.getLogger().level),
+             "on" if WARM_CACHE_ON_STARTUP else "off")
     if WARM_CACHE_ON_STARTUP:
         asyncio.create_task(credit_engine.warm_advice_cache())
 
@@ -155,7 +165,7 @@ def synthesize_speech(req: TTSRequest):
 
         return result
     except Exception as e:
-        print(f"[!] Synthesis Error: {e}")
+        log.exception("Synthesis failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
@@ -171,7 +181,7 @@ def preview_phonemes(req: PhonemizeRequest):
             split_pattern=req.split_pattern or "newline"
         )
     except Exception as e:
-        print(f"[!] Phonemize Error: {e}")
+        log.exception("Phonemize failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
@@ -227,7 +237,7 @@ async def generate_credit_report(req: CreditReportRequest):
             engine_type=req.engine or "edge"
         )
     except Exception as e:
-        print(f"[!] Credit Report Generation Error: {e}")
+        log.exception("Credit report generation failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)

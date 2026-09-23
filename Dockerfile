@@ -28,6 +28,8 @@ COPY cli.py .
 RUN mkdir -p /app/outputs
 
 ENV PORT=10000
+# Send Python output straight to Render's log view instead of buffering it
+ENV PYTHONUNBUFFERED=1
 EXPOSE 10000
 
 # Health check

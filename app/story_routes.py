@@ -12,6 +12,7 @@ timeline on that MP3's clock (full.<lang>.json). Pass ?complete=true to wait for
 GET /api/story/<story_id>.
 """
 import asyncio
+import logging
 import os
 import shutil
 import time
@@ -43,6 +44,7 @@ COMPLETE_QUERY = Query(False, description=(
     "Wait until the whole story is recorded and answer with the single full MP3 and its animation JSON "
     f"(\"full\"). A quick summary takes a few seconds, a CRIF walkthrough about a minute; gives up after {COMPLETE_WAIT} s."))
 
+log = logging.getLogger("story")
 router = APIRouter(tags=["Story video"])
 _jobs: Dict[str, SegmentedStoryJob] = {}   # stories still being recorded, by story id
 _sweeper: Optional[asyncio.Task] = None
@@ -85,9 +87,9 @@ async def _sweep_forever():
         try:
             removed = sweep_expired_stories()
             if removed:
-                print(f"[story] deleted {removed} expired stor{'y' if removed == 1 else 'ies'}")
+                log.info("Deleted %d expired stor%s", removed, "y" if removed == 1 else "ies")
         except Exception as err:
-            print(f"[!] Story cleanup failed: {err}")
+            log.exception("Story cleanup failed")
         await asyncio.sleep(SWEEP_EVERY_SECONDS)
 
 
@@ -98,6 +100,9 @@ async def _start_sweeper():
 
 
 def _start_job(job: SegmentedStoryJob) -> SegmentedStoryJob:
+    job.started = time.time()
+    log.info("Story %s: recording started (%s, %d segments, languages %s)",
+             job.sid, type(job).__name__, job.count, ",".join(job.langs))
     for lang in job.langs:
         job.write_manifest(lang)   # the story URL works from the first moment, even before stage 1
     job.task = asyncio.get_running_loop().create_task(job.run())
@@ -106,8 +111,14 @@ def _start_job(job: SegmentedStoryJob) -> SegmentedStoryJob:
     def done(task: asyncio.Task):
         if _jobs.get(job.sid) is job:
             del _jobs[job.sid]
-        if not task.cancelled() and task.exception():
-            print(f"[!] Story job {job.sid} crashed: {task.exception()}")
+        if task.cancelled():
+            log.warning("Story %s: recording cancelled", job.sid)
+        elif task.exception():
+            log.error("Story %s crashed", job.sid, exc_info=task.exception())
+        else:
+            log.info("Story %s: finished in %.1f s (%s)%s", job.sid, time.time() - job.started, ", ".join(
+                f"{l} {job.ready_count(l)}/{job.count} segments{', full MP3+JSON' if job.full_ready[l] else ''}"
+                for l in job.langs), f", error: {job.error}" if job.error else "")
 
     job.task.add_done_callback(done)
     return job
@@ -138,7 +149,17 @@ async def _serve(request: Request, story_id: str, langs: List[str], make_job: Ca
         except Exception:
             pass   # the job logs its own crash; its status says failed
         if job.start_failed:
+            log.error("Story %s: first segment failed: %s", story_id, job.error)
             raise HTTPException(status_code=502, detail=f"Could not generate the story narration: {job.error}")
+        if complete:
+            pass   # the job logs when it finishes
+        elif job.first_ready.is_set():
+            log.info("Story %s: stage 1 ready, answering after %.1f s", story_id, time.time() - job.started)
+        else:
+            log.info("Story %s: stage 1 still recording after %.1f s, answering with status generating",
+                     story_id, time.time() - job.started)
+    else:
+        log.info("Story %s: served from cache", story_id)
     fields, ready = _story_fields(request, story_id, langs, None if cached or job.task.done() else job)
     return {"cached": cached, **fields}, ready
 
@@ -238,7 +259,9 @@ async def create_crif_story(request: Request, payload: Dict[str, Any] = Body(...
     try:
         p, name, chapters, langs, story_id = prepare(report, name, [str(l).strip() for l in langs], speed)
     except CrifFormatError as err:
+        log.warning("CRIF story rejected: %s", err)
         raise HTTPException(status_code=422, detail=str(err))
+    log.info("CRIF story %s: %d chapters, languages %s", story_id, len(chapters), ",".join(langs))
 
     common, ready = await _serve(request, story_id, langs,
                                  lambda: CrifStoryJob(p, name, chapters, langs, speed, story_id, STORIES_DIR / story_id),
