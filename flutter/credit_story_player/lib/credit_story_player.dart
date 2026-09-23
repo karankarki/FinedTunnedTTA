@@ -3,7 +3,7 @@
 ///
 /// ```dart
 /// final controller = StoryController();
-/// controller.openRequest({'customer_name': 'Karan', 'credit_score': 776, 'languages': ['hi', 'en']});
+/// controller.openCrif(crifJson); // the CRIF High Mark response, as a JSON string
 /// Navigator.push(context, MaterialPageRoute(builder: (_) => Scaffold(
 ///   backgroundColor: Colors.black,
 ///   body: CreditStoryPlayer(controller: controller, onClose: () => Navigator.pop(context)),

@@ -1,52 +1,13 @@
+import 'dart:convert';
+
 import 'package:credit_story_player/credit_story_player.dart';
 import 'package:flutter/material.dart';
 
-// Demo: pick a dummy profile, the app calls the live story engine and plays the result.
+// Demo: paste a CRIF High Mark report (the bureau API response), the app calls the live story
+// engine and plays the result in Hindi and English.
 // Run with: cd example && flutter run
 
 const baseUrl = 'https://finedtunnedtta.onrender.com';
-
-const scenarios = <String, Map<String, dynamic>>{
-  'Karan · 776 · Hindi + English': {
-    'customer_name': 'Karan',
-    'customer_name_hi': 'करण',
-    'credit_score': 776,
-    'languages': ['hi', 'en'],
-    'voice_speed': 0.95,
-  },
-  'Priya · 665 · missed payments': {
-    'customer_name': 'Priya',
-    'credit_score': 665,
-    'missed_payments_count': 2,
-    'active_credit_cards': 2,
-    'credit_utilization_pct': 45,
-    'languages': ['en'],
-  },
-  'Rahul · 795 · super prime': {
-    'customer_name': 'Rahul',
-    'credit_score': 795,
-    'active_credit_cards': 3,
-    'credit_utilization_pct': 15,
-    'recent_inquiries': 1,
-    'languages': ['en', 'hi'],
-  },
-  'Amit · 710 · no cards (Hindi)': {
-    'customer_name': 'Amit',
-    'customer_name_hi': 'अमित',
-    'credit_score': 710,
-    'languages': ['hi'],
-  },
-  'Vikram · 630 · maxed out': {
-    'customer_name': 'Vikram',
-    'credit_score': 630,
-    'on_time_repayment_pct': 94,
-    'missed_payments_count': 1,
-    'active_credit_cards': 4,
-    'credit_utilization_pct': 78,
-    'recent_inquiries': 5,
-    'languages': ['en'],
-  },
-};
 
 void main() => runApp(const DemoApp());
 
@@ -58,19 +19,21 @@ class DemoApp extends StatelessWidget {
         title: 'Credit story demo',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(colorSchemeSeed: const Color(0xFF1677FF), brightness: Brightness.dark, useMaterial3: true),
-        home: const ScenarioList(),
+        home: const CrifInput(),
       );
 }
 
-class ScenarioList extends StatefulWidget {
-  const ScenarioList({super.key});
+class CrifInput extends StatefulWidget {
+  const CrifInput({super.key});
 
   @override
-  State<ScenarioList> createState() => _ScenarioListState();
+  State<CrifInput> createState() => _CrifInputState();
 }
 
-class _ScenarioListState extends State<ScenarioList> {
+class _CrifInputState extends State<CrifInput> {
   final api = StoryApi(baseUrl: baseUrl);
+  final text = TextEditingController();
+  String? problem;
 
   @override
   void initState() {
@@ -78,8 +41,22 @@ class _ScenarioListState extends State<ScenarioList> {
     api.wakeUp(); // the server sleeps when idle; start waking it now
   }
 
-  void _open(Map<String, dynamic> body) {
-    final controller = StoryController(api: api)..openRequest(body);
+  @override
+  void dispose() {
+    text.dispose();
+    super.dispose();
+  }
+
+  void _play() {
+    final crif = text.text.trim();
+    try {
+      jsonDecode(crif);
+    } catch (_) {
+      setState(() => problem = 'That is not valid JSON.');
+      return;
+    }
+    setState(() => problem = null);
+    final controller = StoryController(api: api)..openCrif(crif);
     Navigator.of(context).push(MaterialPageRoute(
       builder: (context) => Scaffold(
         backgroundColor: Colors.black,
@@ -91,14 +68,24 @@ class _ScenarioListState extends State<ScenarioList> {
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(title: const Text('Credit story demo')),
-        body: ListView(children: [
-          for (final e in scenarios.entries)
-            ListTile(
-              leading: const Icon(Icons.play_circle_outline),
-              title: Text(e.key),
-              subtitle: Text('score ${e.value['credit_score']}'),
-              onTap: () => _open(e.value),
+        body: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            const Text('Paste the CRIF High Mark response (JSON):'),
+            const SizedBox(height: 8),
+            Expanded(
+              child: TextField(
+                controller: text,
+                maxLines: null,
+                expands: true,
+                textAlignVertical: TextAlignVertical.top,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                decoration: InputDecoration(border: const OutlineInputBorder(), errorText: problem),
+              ),
             ),
-        ]),
+            const SizedBox(height: 12),
+            FilledButton.icon(onPressed: _play, icon: const Icon(Icons.play_arrow), label: const Text('Generate & play')),
+          ]),
+        ),
       );
 }

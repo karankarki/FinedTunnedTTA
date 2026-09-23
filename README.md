@@ -37,7 +37,7 @@ TTS/
 │   ├── kokoro_engine.py       # Offline Kokoro-82M neural TTS engine & pipeline
 │   ├── main.py                # FastAPI REST API endpoints & audio streaming
 │   ├── story_engine.py        # Narration engine (edge-tts + word timings), quick-summary story
-│   ├── story_routes.py        # POST /api/story, POST /api/story/crif, GET /api/story/{id}
+│   ├── story_routes.py        # POST /api/story (CRIF report in, hi + en MP3 + JSON out), GET /api/story/{id}
 │   ├── crif_report.py         # CRIF High Mark response -> plain facts
 │   └── crif_story.py          # CRIF facts -> chaptered script in English + Hindi
 ├── outputs/                   # Cached audio segments and reports (.gitkeep)
@@ -53,46 +53,46 @@ TTS/
 
 ---
 
-## 🎬 Story API (MP3 + animation JSON for apps)
+## 🎬 Story API (CRIF report → MP3 + animation JSON, Hindi and English)
 
-The server is an engine only: apps call the API and get back **one MP3** and **one JSON timeline** to animate in sync with it. There is no web frontend.
+Apps call one endpoint with the CRIF High Mark report and get back, for **Hindi and English**, one MP3 each plus the full animation JSON. There is no web frontend.
 
 | Call | What it does |
 |------|--------------|
-| `POST /api/story` | Quick summary (1–2 min) from a few fields: `credit_score`, `customer_name`, `missed_payments_count`, `active_credit_cards`, `credit_utilization_pct`, `recent_inquiries`, `languages` (`["hi","en"]`) … |
-| `POST /api/story/crif` | Detailed walkthrough from a CRIF High Mark response, sent as-is (`?languages=hi,en&customer_name=…`) |
-| `GET /api/story/{story_id}` | Status of a story: poll until `status` is `ready` and `full` is set |
+| `POST /api/story` | Body: the CRIF High Mark response, unchanged. Waits until the story is recorded, then returns `hi` and `en`, each with `audio_url`, `json_url`, `duration` and `json` (the full timeline) |
+| `GET /api/story/{story_id}` | The same response for a story made earlier. Poll it after a `202` |
 
-Add `?complete=true` to either POST to wait for the finished story (a few seconds for a quick summary, about a minute for CRIF). Without it the API answers in 1–2 s with `status: "generating"`, and you poll `GET /api/story/{story_id}`.
+Options (query string): `languages=hi,en` (default both), `customer_name=Karan`, `voice_speed=1.05`, and `include_json=false` to return URLs only.
 
 ```bash
-curl -X POST "https://<host>/api/story?complete=true" -H "Content-Type: application/json" \
-  -d '{"customer_name":"Karan","customer_name_hi":"करण","credit_score":776,"languages":["hi"]}'
+curl -X POST "https://<host>/api/story" -H "Content-Type: application/json" --data-binary @crif_response.json
 ```
 
 ```json
 {
-  "story_id": "4bc15b8da6eca2a7",
+  "story_id": "bf91a977f3d30a5b",
   "status": "ready",
-  "full": {
-    "language": "hi",
-    "audio_url": "https://<host>/stories/4bc15b8da6eca2a7/full.hi.mp3",
-    "json_url":  "https://<host>/stories/4bc15b8da6eca2a7/full.hi.json",
-    "duration": 84.2
-  },
-  "languages": [{"code": "hi", "label": "हिंदी", "story_url": "…", "full": {…}}],
-  "expires_at": "2026-09-24T10:00:00+00:00"
+  "cached": false,
+  "expires_at": "…",
+  "languages": ["hi", "en"],
+  "hi": {"label": "हिंदी",  "audio_url": "https://<host>/stories/bf91…/full.hi.mp3", "json_url": "…/full.hi.json", "duration": 806.3, "json": { "scenes": […], "captions": […], "chapters": […], "canvas": {…}, … }},
+  "en": {"label": "English", "audio_url": "https://<host>/stories/bf91…/full.en.mp3", "json_url": "…/full.en.json", "duration": 682.1, "json": { … }},
+  "summary": {…},
+  "chapters": ["Welcome", "Your credit score", …]
 }
 ```
 
-`full.<lang>.json` is on the MP3's clock (seconds from its start):
+Timing, measured locally for a 28-account report (a 13.4 min Hindi video and an 11.4 min English one): the first call takes about **14 s**, and the same report again takes about **10 ms** (cached). Render's free tier is slower, and it adds 30–60 s when the server wakes from idle. If recording takes longer than the server waits (`STORY_WAIT_SECONDS`, default 240), the answer is **HTTP 202** with `"status": "generating"` and a `poll_url`.
 
-- `scenes[]`: `{id, type, chapter, theme, start, end, props, beats[]}`. `type` says which visual to draw (e.g. `score_dial`), `props` holds its data, and each beat fires at `scene.start + beat.at`.
-- `captions[]`: sentences with `start`, `end`, `text` and `words[]` (each word timed, for karaoke highlighting).
-- `chapters[]`: `{id, chapter, start, end}` for a chapter list or seek bar.
+In each `json`, all times are seconds from the start of that language's MP3:
+
+- `scenes[]`: `{id, type, chapter, theme, start, end, props, beats[]}`. `type` says which visual to draw, `props` holds its data, and each beat fires at `scene.start + beat.at`.
+- `captions[]`: sentences with `start`, `end`, `text` and timed `words[]`.
+- `chapters[]`: `{id, chapter, start, end}`.
+- `canvas`, `palette`: the fixed 360×640 design frame and colours (see `flutter/credit_story_player`).
 - `intro`, `end_card`, `brand`, `title`: text for the start and end screens.
 
-While a story is still recording, `story_url` (`story.<lang>.json`) lists each finished segment's own MP3 + JSON (times from that segment's start), and `stage1` is the first segment, so an app can start playing within 1–2 s if it wants to. Stories are deleted 24 h after they are made (`STORY_TTL_HOURS`).
+Errors: `422` means the body isn't a CRIF report; `502` means the voice service failed (retry). Stories are deleted 24 h after they are made (`STORY_TTL_HOURS`).
 
 ---
 

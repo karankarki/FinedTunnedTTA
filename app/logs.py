@@ -70,8 +70,8 @@ def install(app: FastAPI):
         problems = [f"{'.'.join(str(p) for p in e.get('loc', []))}: {e.get('msg')}" for e in exc.errors()]
         body = await request.body()
         hint = None
-        if request.url.path == "/api/story" and _looks_like_crif(body):
-            hint = "This looks like a CRIF report. Send it to POST /api/story/crif instead of /api/story."
+        if request.url.path.startswith("/api/story") and not _looks_like_crif(body):
+            hint = "POST /api/story takes the CRIF High Mark report (the bureau API response) as the body."
         log.warning("[%s] 422 on %s %s: %s%s", rid, request.method, request.url.path, "; ".join(problems[:6]),
                     f" | {hint}" if hint else "")
         errors = [{k: v for k, v in e.items() if k not in ("input", "ctx", "url")} for e in exc.errors()]

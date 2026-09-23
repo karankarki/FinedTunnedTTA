@@ -32,12 +32,7 @@ final api = StoryApi(baseUrl: 'https://finedtunnedtta.onrender.com');
 api.wakeUp(); // when the feature opens: the free server sleeps when idle
 
 final controller = StoryController(api: api)
-  ..openRequest({
-    'customer_name': 'Karan',
-    'customer_name_hi': 'करण',
-    'credit_score': 776,
-    'languages': ['hi', 'en'],
-  });
+  ..openCrif(crifJson); // the CRIF High Mark response (bureau API JSON) as a String
 
 Navigator.push(context, MaterialPageRoute(builder: (_) => Scaffold(
   backgroundColor: Colors.black,
@@ -46,12 +41,14 @@ Navigator.push(context, MaterialPageRoute(builder: (_) => Scaffold(
 // dispose the controller when the route is popped
 ```
 
+`POST /api/story` returns Hindi and English together, each with its MP3 URL and the full timeline JSON, so the player downloads only the audio and switching language is instant.
+
 Other ways to open a story:
 
 | Call | When |
 |---|---|
-| `controller.openRequest(body)` | Generate from profile fields (`POST /api/story?complete=true`) |
-| `controller.openStory(await api.createCrifStory(crifJson))` | Detailed story from a raw CRIF response |
+| `controller.openCrif(crifJson)` | Generate from a CRIF report (`POST /api/story`) |
+| `controller.openStory(await api.createStory(crifJson))` | Same, when you want the response first |
 | `controller.openMedia(StoryMedia(...))` | You already have an `audio_url` + `json_url` |
 | `controller.openTimeline(timeline, mp3Url)` | Mock mode: timeline parsed from an asset |
 
@@ -74,5 +71,5 @@ Fonts: Manrope, with Noto Sans Devanagari for Hindi. They're loaded with `google
 ```bash
 flutter test                   # renders every scene on 5 screen sizes; fails on any overflow
 flutter test --update-goldens --dart-define=SCREENSHOTS=true  # also writes screenshots to test/goldens/
-cd example && flutter run      # demo app: 5 dummy profiles against the live server
+cd example && flutter run      # demo app: paste a CRIF report, plays it from the live server
 ```

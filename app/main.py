@@ -43,7 +43,7 @@ app.add_middleware(
 # Request logs (visible in Render's Logs tab)
 logs.install(app)
 
-# Story API (POST /api/story, /api/story/crif) and the generated MP3 + JSON files (/stories)
+# Story API (POST /api/story: CRIF report in, Hindi + English MP3 + JSON out) and the files (/stories)
 register_story_routes(app)
 
 # In-memory generation history cache (persisted to outputs folder)

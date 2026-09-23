@@ -40,9 +40,10 @@ class StoryController extends ChangeNotifier {
 
   // ----- loading
 
-  /// Generate a quick-summary story from [body] and open it.
-  Future<void> openRequest(Map<String, dynamic> body) =>
-      _guard(() async => openStory(await api.createStory(body)), () => openRequest(body));
+  /// Generate the story for a CRIF report (the bureau API response as a JSON string) and open it.
+  Future<void> openCrif(String crifJson, {List<String> languages = const ['hi', 'en']}) => _guard(
+      () async => openStory(await api.createStory(crifJson, languages: languages)),
+      () => openCrif(crifJson, languages: languages));
 
   /// Open a story the API already returned.
   Future<void> openStory(StoryResponse story) async {
@@ -70,7 +71,7 @@ class StoryController extends ChangeNotifier {
 
   Future<void> _load(StoryMedia media, double at) async {
     _setLoading('Loading your story…');
-    final t = await api.loadTimeline(media.jsonUrl);
+    final t = await api.timelineFor(media);
     await _player.setUrl(media.audioUrl);
     _ready(t, at);
   }
@@ -161,7 +162,7 @@ class StoryController extends ChangeNotifier {
     languageIndex = index;
     await _guard(() async {
       _setLoading('Switching language…');
-      final t = await api.loadTimeline(languages[index].jsonUrl);
+      final t = await api.timelineFor(languages[index]);
       await _player.setUrl(languages[index].audioUrl);
       final match = t.chapters.where((c) => c.id == chapterId);
       _ready(t, match.isEmpty ? 0 : match.first.start);
