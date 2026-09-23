@@ -1,0 +1,52 @@
+{
+  "_about": "Dummy request bodies for POST https://finedtunnedtta.onrender.com/api/story. Pick one per test.",
+  "excellent_hindi": {
+    "customer_name": "Karan",
+    "customer_name_hi": "करण",
+    "credit_score": 776,
+    "score_bureau": "CIBIL",
+    "on_time_repayment_pct": 100,
+    "missed_payments_count": 0,
+    "active_credit_cards": 0,
+    "credit_utilization_pct": 0,
+    "recent_inquiries": 0,
+    "languages": ["hi", "en"],
+    "voice_speed": 0.95
+  },
+  "fair_missed_payments": {
+    "customer_name": "Priya",
+    "credit_score": 665,
+    "missed_payments_count": 2,
+    "active_credit_cards": 2,
+    "credit_utilization_pct": 45,
+    "recent_inquiries": 0,
+    "languages": ["en"]
+  },
+  "super_prime": {
+    "customer_name": "Rahul",
+    "credit_score": 795,
+    "on_time_repayment_pct": 100,
+    "active_credit_cards": 3,
+    "credit_utilization_pct": 15,
+    "recent_inquiries": 1,
+    "languages": ["en", "hi"]
+  },
+  "thin_file_no_cards": {
+    "customer_name": "Amit",
+    "customer_name_hi": "अमित",
+    "credit_score": 710,
+    "active_credit_cards": 0,
+    "recent_inquiries": 0,
+    "languages": ["hi"]
+  },
+  "maxed_out_cards": {
+    "customer_name": "Vikram",
+    "credit_score": 630,
+    "on_time_repayment_pct": 94,
+    "missed_payments_count": 1,
+    "active_credit_cards": 4,
+    "credit_utilization_pct": 78,
+    "recent_inquiries": 5,
+    "languages": ["en"]
+  }
+}
