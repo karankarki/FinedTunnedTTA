@@ -11,6 +11,8 @@ dependencies:
     sdk: flutter
   credit_story_player:
     path: ../
+  http: ^1.2.0
+  just_audio: ^0.9.40
 
 flutter:
   uses-material-design: true
